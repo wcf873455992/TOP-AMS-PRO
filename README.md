@@ -396,31 +396,9 @@ http://<设备IP>/ota.html
 
 ### Bambu Studio 集成
 
-工艺设置 → 其他 → 后处理脚本，填入：
-
-"C:\Python312\python.exe" "C:\smart_config\scripts\post_process_esp32.py";
-
-切片后导出切片文件，检查 G-code 是否包含 M140 S{n+1} 和 M400 U1。
+替换打印机设置中的换料gcode
 
 ### 替换效果
-
-替换前：
-
-M620 S1A
-...
-M621 S1A
-
-替换后：
-
-; ===== ESP32 接口 (通道 1) =====
-M140 S2;EXT
-M400 U1
-M620 S1A
-...
-M621 S1A
-; ===== 等 ESP32 完成换料 =====
-M400 U1
-
 ---
 
 ## 十一、两种模式对比
