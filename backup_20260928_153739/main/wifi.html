@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>设备配置</title>
+    <style>
+        body { font-family: -apple-system, Arial; max-width: 420px; margin: 20px auto; padding: 16px; }
+        h3 { margin-top: 24px; }
+        h3:first-child { margin-top: 0; }
+        .network { padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; }
+        .network:active { background: #f0f0f0; }
+        .rssi { color: #999; font-size: 12px; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; font-size: 16px; }
+        button { background: #007bff; color: #fff; border: none; border-radius: 4px; }
+        #list { max-height: 240px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; margin-top: 8px; }
+        .loading { padding: 12px; color: #999; }
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .status-item { background: #f7f7f7; padding: 10px; border-radius: 4px; }
+        .status-item .label { color: #888; font-size: 12px; }
+        .status-item .value { font-size: 18px; font-weight: bold; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+        .on  { background: #d4edda; color: #155724; }
+        .off { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h3>WiFi 配置</h3>
+    <div id="list"><div class="loading">正在扫描附近 WiFi...</div></div>
+    <form method="post" action="/connect" style="margin-top:12px;">
+        <input name="ssid" id="ssid" placeholder="WiFi 名称 (SSID)" required>
+        <input name="password" type="text" id="wifi_pass" placeholder="密码" required>
+        <button type="submit">连接</button>
+    </form>
+
+    <h3>拓竹打印机</h3>
+    <form method="post" action="/bambu">
+        <input name="ip"     id="b_ip"  placeholder="打印机 IP (如 192.168.1.100)" required>
+        <input name="serial" id="b_sn"  placeholder="设备序列号 (SN)" required>
+        <input name="code"   id="b_pw"  placeholder="访问码 (Access Code)" required>
+        <button type="submit">保存并连接</button>
+    </form>
+
+    <h3>打印机状态</h3>
+    <div id="status"><div class="loading">等待 MQTT 连接...</div></div>
+
+    <script>
+        function loadSavedConfig() {
+            fetch('/config', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(cfg => {
+                    if (cfg.has_wifi) {
+                        if (cfg.wifi_ssid) document.getElementById('ssid').value = cfg.wifi_ssid;
+                        if (cfg.wifi_pass) document.getElementById('wifi_pass').value = cfg.wifi_pass;
+                    }
+                    if (cfg.has_bambu) {
+                        document.getElementById('b_ip').value = cfg.bambu_ip || '';
+                        document.getElementById('b_sn').value = cfg.bambu_sn || '';
+                        document.getElementById('b_pw').value = cfg.bambu_code || '';
+                    }
+                })
+                .catch(e => console.error('加载配置失败:', e));
+        }
+
+        function loadList() {
+            const el = document.getElementById('list');
+            fetch('/scan', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(list => {
+                    if (!list.length) { el.innerHTML = '<div class="loading">未发现网络</div>'; return; }
+                    el.innerHTML = '';
+                    list.sort((a, b) => b.rssi - a.rssi);
+                    list.forEach(n => {
+                        const div = document.createElement('div');
+                        div.className = 'network';
+                        div.innerHTML = '<span>' + n.ssid + '</span>'
+                                      + '<span class="rssi">' + n.rssi + ' dBm</span>';
+                        div.onclick = () => { document.getElementById('ssid').value = n.ssid; };
+                        el.appendChild(div);
+                    });
+                })
+                .catch(() => { el.innerHTML = '<div class="loading">扫描失败</div>'; });
+        }
+
+        function formatTime(ts) {
+            if (!ts || ts <= 0) return '等待中...';
+            const d = new Date(ts * 1000);
+            const pad = n => String(n).padStart(2, '0');
+            return d.getFullYear() + '-' +
+                   pad(d.getMonth() + 1) + '-' +
+                   pad(d.getDate()) + ' ' +
+                   pad(d.getHours()) + ':' +
+                   pad(d.getMinutes()) + ':' +
+                   pad(d.getSeconds());
+        }
+
+        function refreshStatus() {
+            fetch('/bambu/status', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(s => {
+                    const el = document.getElementById('status');
+                    const badge = s.connected
+                        ? '<span class="badge on">已连接</span>'
+                        : '<span class="badge off">未连接</span>';
+                    el.innerHTML =
+                        '<div style="margin-bottom:8px;">MQTT: ' + badge +
+                        '  <span style="font-size:12px;color:#888;margin-left:8px;">数据更新: ' + formatTime(s.last_update) + '</span></div>' +
+                        '<div style="margin-bottom:8px;font-size:14px;color:#555;">任务: ' + (s.subtask || '--') + '</div>' +
+                        '<div class="status-grid">' +
+                        '  <div class="status-item"><div class="label">状态</div><div class="value">' + s.state + '</div></div>' +
+                        '  <div class="status-item"><div class="label">进度</div><div class="value">' + s.progress + '%</div></div>' +
+                        '  <div class="status-item"><div class="label">喷嘴</div><div class="value">' + s.nozzle + '/' + s.nozzle_target + '°C</div></div>' +
+                        '  <div class="status-item"><div class="label">热床</div><div class="value">' + s.bed + '/' + s.bed_target + '°C</div></div>' +
+                        '  <div class="status-item"><div class="label">层数</div><div class="value">' + s.layer + '/' + s.total_layer + '</div></div>' +
+                        '  <div class="status-item"><div class="label">剩余</div><div class="value">' + s.remaining + ' min</div></div>' +
+                        '  <div class="status-item"><div class="label">喷嘴型号</div><div class="value">' + s.nozzle_type + '</div></div>' +
+                        '  <div class="status-item"><div class="label">直径</div><div class="value">' + s.nozzle_diameter + ' mm</div></div>' +
+                        '  <div class="status-item"><div class="label">耗材</div><div class="value">' + (s.tray_type || '--') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">WiFi</div><div class="value">' + s.wifi + '</div></div>' +
+                        '  <div class="status-item"><div class="label">AMS</div><div class="value">' + (s.ams_exist ? '有' : '无') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">HMS</div><div class="value">' + s.hms + '</div></div>' +
+                        '  <div class="status-item"><div class="label">舱灯</div><div class="value">' + (s.chamber_light ? '开' : '关') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">工作灯</div><div class="value">' + (s.work_light ? '开' : '关') + '</div></div>' +
+                        '</div>' +
+                        (s.rtsp ? '<div style="margin-top:8px;font-size:12px;color:#888;">RTSP: ' + s.rtsp + '</div>' : '');
+                })
+                .catch(() => {});
+        }
+
+        window.addEventListener('load', function() {
+            loadSavedConfig();
+            loadList();
+            refreshStatus();
+            setInterval(loadList, 15000);
+            setInterval(refreshStatus, 2000);
+        });
+    </script>
+
+<div class="mode-section">
+  <button id="modeBtn" class="mode-btn" onclick="toggleMode()">被动模式</button>
+  <span id="modeHint" class="mode-hint">未联动（只读状态）</span>
+</div>
+
+<script>
+let currentMode = 'passive';
+
+async function loadMode() {
+  try {
+    const r = await fetch('/api/filament_sync');
+    const mode = await r.text();
+    currentMode = (mode === 'active') ? 'active' : 'passive';
+    updateModeUI();
+  } catch(e) {}
+}
+
+function updateModeUI() {
+  const btn = document.getElementById('modeBtn');
+  const hint = document.getElementById('modeHint');
+  if (!btn || !hint) return;
+  if (currentMode === 'active') {
+    btn.textContent = '主动模式';
+    btn.classList.add('active');
+    hint.textContent = '已联动（发控制命令，需仅局域网 + 开发者模式）';
+  } else {
+    btn.textContent = '被动模式';
+    btn.classList.remove('active');
+    hint.textContent = '未联动（只读状态，物理进退料）';
+  }
+}
+
+async function toggleMode() {
+  const newMode = (currentMode === 'active') ? 'passive' : 'active';
+  try {
+    const r = await fetch('/api/filament_sync', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ sync: newMode === 'active' })
+    });
+    if (r.ok) {
+      currentMode = newMode;
+      updateModeUI();
+    } else {
+      alert('切换失败');
+    }
+  } catch(e) {
+    alert('网络错误: ' + e.message);
+  }
+}
+
+loadMode();
+</script>
+
+<style>
+.mode-section {
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+.mode-btn {
+  padding: 10px 24px;
+  font-size: 15px;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #fff;
+  background: #6c757d;
+  transition: background 0.2s;
+}
+.mode-btn.active {
+  background: #dc3545;
+}
+.mode-btn:hover {
+  opacity: 0.9;
+}
+.mode-hint {
+  font-size: 12px;
+  color: #888;
+  margin-left: 12px;
+}
+</style>
+</body>
+</html>

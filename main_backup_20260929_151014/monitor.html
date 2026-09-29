@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TOP AMS Pro - 打印监控</title>
+    <style>
+        body { font-family: monospace; max-width: 640px; margin: 20px auto; padding: 16px; background: #1e1e1e; color: #d4d4d4; }
+        h1 { font-size: 18px; text-align: center; color: #007bff; margin-top: 0; }
+        .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+        .toolbar button { flex: 1; padding: 8px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+        .toolbar button.stop { background: #dc3545; }
+        .toolbar button.clear { background: #6c757d; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        td { padding: 3px 8px; border-bottom: 1px solid #333; }
+        td.label { color: #888; width: 45%; }
+        td.value { font-weight: bold; color: #4ec9b0; word-break: break-all; }
+        tr.changed { background: #4a3f00; }
+        tr.changed td.value { color: #ffd700; }
+        .log { margin-top: 12px; background: #000; padding: 10px; border-radius: 4px; height: 300px; overflow-y: auto; font-size: 12px; white-space: pre-wrap; line-height: 1.4; }
+        .back { display:block; text-align:center; text-decoration:none; padding:10px; background:#6c757d; color:#fff; border-radius:4px; margin-top:12px; }
+        .field-count { text-align: center; font-size: 12px; color: #888; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <h1>TOP AMS Pro 打印监控</h1>
+
+    <div class="toolbar">
+        <button id="toggleBtn" onclick="toggleMonitor()">暂停</button>
+        <button class="clear" onclick="clearChanges()">清空变化</button>
+    </div>
+
+    <div class="field-count" id="fieldCount">监控中: -- 个字段</div>
+
+    <table id="monitorTable">
+        <tbody id="monitorBody">
+            <tr><td colspan="2" style="color:#888;">等待数据...</td></tr>
+        </tbody>
+    </table>
+
+    <h3 style="color:#007bff;">变化日志</h3>
+    <div id="changeLog" class="log"></div>
+
+    <a href="/" class="back">返回主界面</a>
+
+    <script>
+        let monitorData = {};
+        let monitorRunning = true;
+        let changeLogLines = [];
+        let fieldOrder = [];
+
+        function toggleMonitor() {
+            monitorRunning = !monitorRunning;
+            document.getElementById('toggleBtn').textContent = monitorRunning ? '暂停' : '继续';
+            document.getElementById('toggleBtn').className = monitorRunning ? '' : 'stop';
+        }
+
+        function clearChanges() {
+            changeLogLines = [];
+            document.getElementById('changeLog').textContent = '';
+        }
+
+        function addLogLine(line) {
+            changeLogLines.push(line);
+            if (changeLogLines.length > 500) {
+                changeLogLines = changeLogLines.slice(-500);
+            }
+            const el = document.getElementById('changeLog');
+            el.textContent = changeLogLines.join('\n');
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function updateFieldCount() {
+            document.getElementById('fieldCount').textContent =
+                '监控中: ' + fieldOrder.length + ' 个字段';
+        }
+
+        function addRow(field, value) {
+            const tbody = document.getElementById('monitorBody');
+            if (!tbody) return;
+
+            const tr = document.createElement('tr');
+            tr.id = 'row_' + field;
+
+            const td1 = document.createElement('td');
+            td1.className = 'label';
+            td1.textContent = field;
+
+            const td2 = document.createElement('td');
+            td2.className = 'value';
+            td2.id = 'val_' + field;
+            td2.textContent = value;
+
+            tr.appendChild(td1);
+            tr.appendChild(td2);
+            tbody.appendChild(tr);
+        }
+
+        function checkChanges(s) {
+            if (!monitorRunning) return;
+
+            const tbody = document.getElementById('monitorBody');
+            if (!tbody) return;
+
+            if (fieldOrder.length === 0) {
+                tbody.innerHTML = '';
+            }
+
+            for (const key in s) {
+                if (!s.hasOwnProperty(key)) continue;
+
+                let newV = s[key];
+                if (newV === undefined || newV === null) newV = '--';
+
+                if (!fieldOrder.includes(key)) {
+                    fieldOrder.push(key);
+                    addRow(key, newV);
+                    monitorData[key] = newV;
+                    addLogLine('[' + new Date().toLocaleTimeString() + '] + 新字段: ' + key + ' = ' + newV);
+                    continue;
+                }
+
+                const oldV = monitorData[key];
+                if (oldV !== newV) {
+                    const tr = document.getElementById('row_' + key);
+                    const cell = document.getElementById('val_' + key);
+
+                    if (cell) cell.textContent = newV;
+                    if (tr) {
+                        tr.classList.add('changed');
+                        setTimeout(() => tr.classList.remove('changed'), 800);
+                    }
+
+                    const time = new Date().toLocaleTimeString();
+                    addLogLine('[' + time + '] ' + key + ': ' + oldV + ' -> ' + newV);
+
+                    monitorData[key] = newV;
+                }
+            }
+
+            updateFieldCount();
+        }
+
+        function pollStatus() {
+            fetch('/bambu/status', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(s => {
+                    checkChanges(s);
+                })
+                .catch(e => {
+                    addLogLine('[ERR] ' + e.message);
+                });
+        }
+
+        window.addEventListener('load', function() {
+            pollStatus();
+            setInterval(pollStatus, 2000);
+        });
+    </script>
+</body>
+</html>

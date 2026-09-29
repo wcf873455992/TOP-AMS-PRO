@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TOP AMS Pro</title>
+    <style>
+        body { font-family: -apple-system, Arial; max-width: 420px; margin: 20px auto; padding: 16px; }
+        h3 { margin-top: 0; }
+        .back { display:block; text-align:center; text-decoration:none; padding:12px;
+                background:#6c757d; color:#fff; border-radius:4px; margin-top:16px; box-sizing:border-box; }
+        input[type="file"] { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; }
+        button { width: 100%; padding: 14px; background: #007bff; color: #fff;
+                 border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+        button:disabled { background: #aaa; cursor: not-allowed; }
+        .progress { width: 100%; height: 20px; background: #eee; border-radius: 10px;
+                    margin-top: 16px; overflow: hidden; display: none; }
+        .progress-bar { height: 100%; background: #28a745; width: 0%; transition: width 0.2s; }
+        .status { margin-top: 12px; font-size: 14px; color: #666; text-align: center; }
+        .status.ok { color: #28a745; font-weight: bold; }
+        .status.err { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <h3>固件升级 (OTA)</h3>
+    <p style="color:#666; font-size:14px;">
+        选择编译好的 <code>web_prov.bin</code> 文件上传，设备会自动升级并重启。
+    </p>
+
+    <input type="file" id="fwFile" accept=".bin">
+    <button id="uploadBtn" onclick="uploadFirmware()">上传并升级</button>
+
+    <div class="progress" id="progress">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="status" id="status"></div>
+
+    <a href="/" class="back">返回主界面</a>
+
+    <script>
+        function uploadFirmware() {
+            const fileInput = document.getElementById('fwFile');
+            const status = document.getElementById('status');
+            const progress = document.getElementById('progress');
+            const progressBar = document.getElementById('progressBar');
+            const btn = document.getElementById('uploadBtn');
+
+            if (!fileInput.files.length) {
+                status.className = 'status err';
+                status.textContent = '请先选择固件文件';
+                return;
+            }
+
+            const file = fileInput.files[0];
+
+            if (!confirm('确定要升级固件吗？升级过程中请勿断电。')) {
+                return;
+            }
+
+            btn.disabled = true;
+            progress.style.display = 'block';
+            progressBar.style.width = '0%';
+            status.className = 'status';
+            status.textContent = '正在上传... 0%';
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/ota/upload', true);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    status.textContent = '正在上传... ' + percent + '%';
+                }
+            };
+
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    status.className = 'status ok';
+                    status.textContent = '升级成功！设备正在重启...';
+                    progressBar.style.width = '100%';
+                    setTimeout(() => {
+                        status.textContent = '请等待设备重启，然后刷新页面';
+                    }, 2000);
+                } else {
+                    status.className = 'status err';
+                    status.textContent = '升级失败: ' + xhr.status + ' ' + xhr.responseText;
+                    btn.disabled = false;
+                }
+            };
+
+            xhr.onerror = function() {
+                status.className = 'status err';
+                status.textContent = '网络错误，升级失败';
+                btn.disabled = false;
+            };
+
+            xhr.send(file);
+        }
+    </script>
+</body>
+</html>

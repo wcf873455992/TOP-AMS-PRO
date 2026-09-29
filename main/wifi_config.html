@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TOP AMS Pro</title>
+    <style>
+        body { font-family: -apple-system, Arial; max-width: 420px; margin: 20px auto; padding: 16px; }
+        h3 { margin-top: 0; }
+        .network { padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; }
+        .network:active { background: #f0f0f0; }
+        .rssi { color: #999; font-size: 12px; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; font-size: 16px; }
+        button { background: #007bff; color: #fff; border: none; border-radius: 4px; }
+        .back { display:block; text-align:center; text-decoration:none; padding:12px;
+                background:#6c757d; color:#fff; border-radius:4px; margin-top:8px; box-sizing:border-box; }
+        #list { max-height: 240px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; margin-top: 8px; }
+        .loading { padding: 12px; color: #999; }
+    </style>
+</head>
+<body>
+    <h3>WiFi 配置</h3>
+    <div id="list"><div class="loading">正在扫描附近 WiFi...</div></div>
+    <form method="post" action="/connect" style="margin-top:12px;">
+        <input name="ssid" id="ssid" placeholder="WiFi 名称 (SSID)" required>
+        <input name="password" type="text" id="wifi_pass" placeholder="密码" required>
+        <button type="submit">连接</button>
+    </form>
+    <a href="/" class="back">返回主界面</a>
+
+    <script>
+        function loadSavedConfig() {
+            fetch('/config', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(cfg => {
+                    if (cfg.has_wifi) {
+                        if (cfg.wifi_ssid) document.getElementById('ssid').value = cfg.wifi_ssid;
+                        if (cfg.wifi_pass) document.getElementById('wifi_pass').value = cfg.wifi_pass;
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function loadList() {
+            const el = document.getElementById('list');
+            fetch('/scan', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(list => {
+                    if (!list.length) { el.innerHTML = '<div class="loading">未发现网络</div>'; return; }
+                    el.innerHTML = '';
+                    list.sort((a, b) => b.rssi - a.rssi);
+                    list.forEach(n => {
+                        const div = document.createElement('div');
+                        div.className = 'network';
+                        div.innerHTML = '<span>' + n.ssid + '</span>'
+                                      + '<span class="rssi">' + n.rssi + ' dBm</span>';
+                        div.onclick = () => { document.getElementById('ssid').value = n.ssid; };
+                        el.appendChild(div);
+                    });
+                })
+                .catch(() => { el.innerHTML = '<div class="loading">扫描失败</div>'; });
+        }
+
+        window.addEventListener('load', function() {
+            loadSavedConfig();
+            loadList();
+            setInterval(loadList, 15000);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>TOP AMS Pro</title>
+    <style>
+        body { font-family: -apple-system, Arial; max-width: 420px; margin: 20px auto; padding: 16px; }
+        h3 { margin-top: 24px; }
+        h3:first-child { margin-top: 0; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; font-size: 16px; }
+        button.submit { background: #28a745; color: #fff; border: none; border-radius: 4px; }
+        .back { display:block; text-align:center; text-decoration:none; padding:12px;
+                background:#6c757d; color:#fff; border-radius:4px; margin-top:8px; box-sizing:border-box; }
+        .toast { position:fixed; bottom:30px; left:50%; transform:translateX(-50%);
+                 background:#333; color:#fff; padding:10px 20px; border-radius:6px;
+                 font-size:14px; opacity:0; transition:opacity 0.3s; pointer-events:none; }
+        .toast.show { opacity:0.9; }
+        .status-box { padding: 12px; border-radius: 6px; margin-bottom: 12px;
+                      font-size: 14px; display: flex; align-items: center; }
+        .status-box.connected { background: #d4edda; color: #155724; }
+        .status-box.disconnected { background: #f8d7da; color: #721c24; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+        .status-box.connected .status-dot { background: #28a745; }
+        .status-box.disconnected .status-dot { background: #dc3545; }
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .status-item { background: #f7f7f7; padding: 10px; border-radius: 4px; }
+        .status-item .label { color: #888; font-size: 12px; }
+        .status-item .value { font-size: 18px; font-weight: bold; }
+        .task-name { font-size: 15px; color: #333; margin-bottom: 8px;
+                     padding: 8px 10px; background: #f0f6ff; border-radius: 4px; }
+        #controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+        .ctrl-btn { padding: 12px; background: #17a2b8; color: #fff; border: none;
+                    border-radius: 4px; font-size: 14px; cursor: pointer; margin: 0; }
+        .ctrl-btn:active { background: #138496; }
+        .ctrl-btn.danger { background: #dc3545; }
+        .ctrl-btn.danger:active { background: #c82333; }
+        .ctrl-btn.success { background: #28a745; }
+        .ctrl-btn.success:active { background: #218838; }
+        .loading { padding: 12px; color: #999; }
+    </style>
+</head>
+<body>
+    <h3>拓竹打印机配置</h3>
+
+    <div id="conn-status" class="status-box disconnected">
+        <span class="status-dot"></span>
+        <span id="conn-text">正在检查连接...</span>
+    </div>
+
+    <form id="printerForm">
+        <input name="ip"     id="p_ip"  placeholder="打印机 IP (如 192.168.1.100)" required>
+        <input name="serial" id="p_sn"  placeholder="设备序列号 (SN)" required>
+        <input name="code"   id="p_pw"  placeholder="访问码 (Access Code)" required>
+        <button type="submit" class="submit">保存并连接</button>
+    </form>
+
+    <h3>打印机详情</h3>
+    <div id="detail"><div class="loading">等待 MQTT 连接...</div></div>
+
+    <h3>打印机控制</h3>
+    <div id="controls">
+        <button class="ctrl-btn success" onclick="sendCmd('resume')">继续打印</button>
+        <button class="ctrl-btn danger"  onclick="sendCmd('pause')">暂停打印</button>
+        <button class="ctrl-btn" onclick="sendCmd('status')">刷新状态</button>
+        <button class="ctrl-btn" onclick="filamentGcodeAction(1,'forward')">进料</button>
+        <button class="ctrl-btn" onclick="filamentGcodeAction(1,'backward')">退料</button>
+        <button class="ctrl-btn" onclick="filamentGcodeAction(1,'load')">装载</button>
+        <button class="ctrl-btn" onclick="sendCmd('done')">AMS 完成</button>
+        <button class="ctrl-btn" onclick="sendCmd('retry')">AMS 重试</button>
+        <button class="ctrl-btn" onclick="sendCmd('clean')">清除错误</button>
+        <button class="ctrl-btn" onclick="sendCmd('light_on')">舱灯开</button>
+        <button class="ctrl-btn" onclick="sendCmd('light_off')">舱灯关</button>
+    </div>
+
+    <a href="/" class="back" style="margin-top:16px;">返回主界面</a>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        function sendCmd(cmd) {
+            fetch('/bambu/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'cmd=' + encodeURIComponent(cmd)
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.ok) showToast('命令已发送: ' + cmd);
+                else showToast('命令失败');
+            })
+            .catch(() => showToast('网络错误'));
+        }
+
+        function filamentAction(ch, action) {
+            fetch('/filament/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'ch=' + ch + '&action=' + action
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.ok) showToast('通道' + ch + ' ' + action);
+                else showToast('失败');
+            })
+            .catch(() => showToast('网络错误'));
+        }
+
+        function loadSavedConfig() {
+            fetch('/config', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(cfg => {
+                    if (cfg.has_bambu) {
+                        document.getElementById('p_ip').value = cfg.bambu_ip || '';
+                        document.getElementById('p_sn').value = cfg.bambu_sn || '';
+                        document.getElementById('p_pw').value = cfg.bambu_code || '';
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function formatTime(ts) {
+            if (!ts || ts <= 0) return '--';
+            const d = new Date(ts * 1000);
+            const pad = n => String(n).padStart(2, '0');
+            return d.getFullYear() + '-' +
+                   pad(d.getMonth() + 1) + '-' +
+                   pad(d.getDate()) + ' ' +
+                   pad(d.getHours()) + ':' +
+                   pad(d.getMinutes()) + ':' +
+                   pad(d.getSeconds());
+        }
+
+        function refreshPrinter() {
+            fetch('/bambu/status', { cache: 'no-store' })
+                .then(r => r.json())
+                .then(s => {
+                    const box = document.getElementById('conn-status');
+                    const text = document.getElementById('conn-text');
+                    if (s.connected) {
+                        box.className = 'status-box connected';
+                        text.textContent = '已连接打印机';
+                    } else {
+                        box.className = 'status-box disconnected';
+                        text.textContent = '未连接打印机';
+                    }
+
+                    const el = document.getElementById('detail');
+                    el.innerHTML =
+                        '<div style="margin-bottom:8px;font-size:12px;color:#888;">' +
+                        '数据更新: ' + formatTime(s.last_update) + '</div>' +
+                        '<div class="task-name">任务: ' + (s.subtask || '--') + '</div>' +
+                        '<div class="status-grid">' +
+                        '  <div class="status-item"><div class="label">状态</div><div class="value">' + s.state + '</div></div>' +
+                        '  <div class="status-item"><div class="label">进度</div><div class="value">' + s.progress + '%</div></div>' +
+                        '  <div class="status-item"><div class="label">喷嘴</div><div class="value">' + s.nozzle + '/' + s.nozzle_target + '°C</div></div>' +
+                        '  <div class="status-item"><div class="label">热床</div><div class="value">' + s.bed + '/' + s.bed_target + '°C</div></div>' +
+                        '  <div class="status-item"><div class="label">层数</div><div class="value">' + s.layer + '/' + s.total_layer + '</div></div>' +
+                        '  <div class="status-item"><div class="label">剩余</div><div class="value">' + s.remaining + ' min</div></div>' +
+                        '  <div class="status-item"><div class="label">喷嘴型号</div><div class="value">' + s.nozzle_type + '</div></div>' +
+                        '  <div class="status-item"><div class="label">直径</div><div class="value">' + s.nozzle_diameter + ' mm</div></div>' +
+                        '  <div class="status-item"><div class="label">耗材</div><div class="value">' + (s.tray_type || '--') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">WiFi</div><div class="value">' + s.wifi + '</div></div>' +
+                        '  <div class="status-item"><div class="label">AMS</div><div class="value">' + (s.ams_exist ? '有' : '无') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">HMS</div><div class="value">' + s.hms + '</div></div>' +
+                        '  <div class="status-item"><div class="label">舱灯</div><div class="value">' + (s.chamber_light ? '开' : '关') + '</div></div>' +
+                        '  <div class="status-item"><div class="label">工作灯</div><div class="value">' + (s.work_light ? '开' : '关') + '</div></div>' +
+                        '</div>' +
+                        (s.rtsp ? '<div style="margin-top:8px;font-size:12px;color:#888;">RTSP: ' + s.rtsp + '</div>' : '');
+                })
+                .catch(() => {
+                    document.getElementById('conn-status').className = 'status-box disconnected';
+                    document.getElementById('conn-text').textContent = '无法获取连接状态';
+                });
+        }
+
+        window.addEventListener('load', function() {
+            loadSavedConfig();
+            refreshPrinter();
+            setInterval(refreshPrinter, 2000);
+
+            const form = document.getElementById('printerForm');
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const formData = new FormData(form);
+                fetch('/bambu', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams(formData).toString()
+                })
+                .then(r => r.json())
+                .then(res => {
+                    if (res.ok) {
+                        showToast('配置已保存，正在连接打印机...');
+                        setTimeout(refreshPrinter, 2000);
+                    } else {
+                        showToast('保存失败，请重试');
+                    }
+                })
+                .catch(() => showToast('网络错误，请重试'));
+            });
+        });
+    </script>
+</body>
+</html>
