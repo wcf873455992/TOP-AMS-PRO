@@ -154,6 +154,7 @@
 
     <script>
         let actionPending = false;
+        let actionPendingTime = 0;
         let userInteracting = false;
         let logSince = 0;
         let logReceived = 0;
@@ -261,7 +262,7 @@
             }
             el.innerHTML = '';
 
-            const anyBusy = actionPending || channelsData.some(c => c.state === 1 || c.state === 2);
+            const anyBusy = channelsData.some(c => c.state === 1 || c.state === 2);
             const disabled = anyBusy ? 'disabled' : '';
 
             channelsData.forEach(ch => {
@@ -714,9 +715,9 @@
             loadChannels();
             loadLogs();
             setInterval(loadSavedConfig, 15000);
-            setInterval(refreshStatus, 2000);
-            setInterval(loadChannels, 2000);
-            setInterval(loadLogs, 2000);
+            setInterval(refreshStatus, 1000);
+            setInterval(loadChannels, 1000);
+            setInterval(loadLogs, 1000);
         });
     </script>
 </body>

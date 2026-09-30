@@ -10,7 +10,7 @@
 *~
 *.swp
 *.swo
-*.bak
+*.bak*
 *.tmp
 
 # Log files

@@ -709,8 +709,15 @@ static void filament_load_task(void *arg)
                 int sig = g_target_channel_signal;
                 if (sig < 1 || sig > 8) sig = g_bambu_status.bed_target_temper;
                 if (sig > 8) sig = g_current_channel;
-                target_ch = (sig >= 1 && sig <= 8) ? sig : g_current_channel;
-                if (target_ch < 1 || target_ch > 8) target_ch = 1;
+
+                if (sig >= 1 && sig <= 8) {
+                    target_ch = sig;
+                } else if (g_current_channel >= 1 && g_current_channel <= 8) {
+                    target_ch = g_current_channel;   /* ★ 回退到当前通道 */
+                    ESP_LOGI(TAG, "[进料] 无信号，回退到当前通道 %d", target_ch);
+                } else {
+                    target_ch = 1;
+                }
 
                 ESP_LOGI(TAG, "[进料-被动] 检测到 %d，目标通道 %d（信号=%d）",
                          ams, target_ch, sig);
@@ -884,8 +891,8 @@ void filament_load_start(void)
  * ============================================================ */
 static void filament_forward_manual_task(void *arg)
 {
-    int32_t ch = (int32_t)(intptr_t)arg;
-    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    bool started_active = g_printer_sync;
 
     if (!filament_lock(2000)) {
         ESP_LOGW(TAG, "[进料-手动] 换料忙，放弃");
@@ -908,6 +915,15 @@ static void filament_forward_manual_task(void *arg)
         int timeout = 360;
         int last_ams = -1;
         while (timeout-- > 0) {
+            /* ★ 切到被动模式，立即中止 */
+            if (!g_printer_sync) {
+                ESP_LOGW(TAG, "[手动] 切到被动模式，中止");
+                filament_lock(portMAX_DELAY);
+                s_filament_busy = false;
+                filament_unlock();
+                vTaskDelete(NULL);
+                return;
+            }
             int ams = g_bambu_status.ams_status;
             if (ams != last_ams) {
                 ESP_LOGI(TAG, "[进料-主动] ams_status: %d -> %d (%s)",
@@ -965,6 +981,15 @@ static void filament_forward_manual_task(void *arg)
         timeout = 360;
         last_ams = -1;
         while (timeout-- > 0) {
+            /* ★ 切到被动模式，立即中止 */
+            if (!g_printer_sync) {
+                ESP_LOGW(TAG, "[手动] 切到被动模式，中止");
+                filament_lock(portMAX_DELAY);
+                s_filament_busy = false;
+                filament_unlock();
+                vTaskDelete(NULL);
+                return;
+            }
             int ams = g_bambu_status.ams_status;
             if (ams != last_ams) {
                 ESP_LOGI(TAG, "[进料-主动] ams_status: %d -> %d (%s)",
@@ -993,14 +1018,38 @@ static void filament_forward_manual_task(void *arg)
         }
     } else {
         ESP_LOGI(TAG, "[进料-被动] 通道 %ld：物理进料", (long)ch);
+        /* ★ 进料前先切换通道 */
+        if (g_current_channel >= 1 && g_current_channel <= 8 &&
+            g_current_channel != ch) {
+            g_channel_state[g_current_channel - 1] = 0;
+            ESP_LOGI(TAG, "[切通道] 清除通道 %ld 使用中状态",
+                     (long)g_current_channel);
+        }
+        g_current_channel = ch;
+        g_channel_state[ch - 1] = 1;
+        filament_save_config();
         filament_forward(ch);
     }
 
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+    }
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+        ESP_LOGI(TAG, "[切通道] 清除通道 %ld 使用中状态",
+                 (long)g_current_channel);
+    }
     g_current_channel = ch;
     g_channel_state[ch - 1] = 3;
     filament_save_config();
 
-    ESP_LOGI(TAG, "[进料-主动] 通道 %ld 完成", (long)ch);
+    if (started_active) {
+        ESP_LOGI(TAG, "[进料-主动] 通道 %ld 完成", (long)ch);
+    } else {
+        ESP_LOGI(TAG, "[进料-被动] 通道 %ld 完成", (long)ch);
+    }
 
     filament_lock(portMAX_DELAY);
     s_filament_busy = false;
@@ -1013,8 +1062,8 @@ static void filament_forward_manual_task(void *arg)
  * ============================================================ */
 static void filament_backward_manual_task(void *arg)
 {
-    int32_t ch = (int32_t)(intptr_t)arg;
-    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    bool started_active = g_printer_sync;
 
     if (!filament_lock(2000)) {
         ESP_LOGW(TAG, "[退料-手动] 换料忙，放弃");
@@ -1037,6 +1086,15 @@ bambu_send_change_filament(ch, 0);
         int timeout = 360;
         int last_ams = -1;
         while (timeout-- > 0) {
+            /* ★ 切到被动模式，立即中止 */
+            if (!g_printer_sync) {
+                ESP_LOGW(TAG, "[手动] 切到被动模式，中止");
+                filament_lock(portMAX_DELAY);
+                s_filament_busy = false;
+                filament_unlock();
+                vTaskDelete(NULL);
+                return;
+            }
             int ams = g_bambu_status.ams_status;
             if (ams != last_ams) {
                 ESP_LOGI(TAG, "[退料-主动] ams_status: %d -> %d (%s)",
@@ -1054,18 +1112,31 @@ bambu_send_change_filament(ch, 0);
         ESP_LOGI(TAG, "[退料-主动] 检测到 260，开始物理退料");
     } else {
         ESP_LOGI(TAG, "[退料-被动] 通道 %ld：物理退料", (long)ch);
+        /* ★ 退料前先切换通道 */
+        if (g_current_channel >= 1 && g_current_channel <= 8 &&
+            g_current_channel != ch) {
+            g_channel_state[g_current_channel - 1] = 0;
+            ESP_LOGI(TAG, "[切通道] 清除通道 %ld 使用中状态",
+                     (long)g_current_channel);
+        }
+        g_current_channel = ch;
+        g_channel_state[ch - 1] = 2;
+        filament_save_config();
     }
 
     filament_backward(ch);
     g_channel_state[ch - 1] = 0;
 
-    if (g_current_channel == ch) {
-        g_current_channel = 0;
-        ESP_LOGI(TAG, "[退料-主动] 已清空当前通道 %ld", (long)g_current_channel);
-        filament_save_config();
-    }
+    /* ★ 不清 g_current_channel，保留"上次用的通道" */
+    ESP_LOGI(TAG, "[退料] 通道 %ld 已退料，当前通道保留为 %ld",
+             (long)ch, (long)g_current_channel);
+    filament_save_config();
 
-    ESP_LOGI(TAG, "[退料-主动] 通道 %ld 完成", (long)ch);
+    if (started_active) {
+        ESP_LOGI(TAG, "[退料-主动] 通道 %ld 完成", (long)ch);
+    } else {
+        ESP_LOGI(TAG, "[退料-被动] 通道 %ld 完成", (long)ch);
+    }
 
     filament_lock(portMAX_DELAY);
     s_filament_busy = false;
@@ -1078,10 +1149,10 @@ bambu_send_change_filament(ch, 0);
  * ============================================================ */
 static void filament_load_manual_task(void *arg)
 {
-    int32_t ch = (int32_t)(intptr_t)arg;
-    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
 
-    if (!filament_lock(2000)) {
+    bool started_active = g_printer_sync;
+    /* ★ 记录启动时的模式（结尾日志用） */    if (!filament_lock(2000)) {
         ESP_LOGW(TAG, "[装载-手动] 换料忙，放弃");
         vTaskDelete(NULL); return;
     }
@@ -1117,6 +1188,15 @@ bambu_send_change_filament(old_ch, 0);
         int timeout = 360;
         int last_ams = -1;
         while (timeout-- > 0) {
+            /* ★ 切到被动模式，立即中止 */
+            if (!g_printer_sync) {
+                ESP_LOGW(TAG, "[手动] 切到被动模式，中止");
+                filament_lock(portMAX_DELAY);
+                s_filament_busy = false;
+                filament_unlock();
+                vTaskDelete(NULL);
+                return;
+            }
             int ams = g_bambu_status.ams_status;
             if (ams != last_ams) {
 
@@ -1216,6 +1296,15 @@ bambu_send_change_filament(old_ch, 0);
         timeout = 360;
         last_ams = -1;
         while (timeout-- > 0) {
+            /* ★ 切到被动模式，立即中止 */
+            if (!g_printer_sync) {
+                ESP_LOGW(TAG, "[手动] 切到被动模式，中止");
+                filament_lock(portMAX_DELAY);
+                s_filament_busy = false;
+                filament_unlock();
+                vTaskDelete(NULL);
+                return;
+            }
             int ams = g_bambu_status.ams_status;
             if (ams != last_ams) {
 
@@ -1286,7 +1375,7 @@ bambu_send_change_filament(old_ch, 0);
 
     SKIP_SWAP_RESUME:
     /* ★ 主动模式：换料完成，等 1 秒让打印机稳定，然后自动 resume */
-    if (g_printer_sync) {
+    if (started_active) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (strcmp(g_bambu_status.gcode_state, "PAUSE") == 0) {
             ESP_LOGI(TAG, "[主动] 换料完成，自动恢复打印");
@@ -1487,8 +1576,8 @@ void filament_slow_test_async(int32_t ch, int32_t pulse_ms,
 
 static void filament_gcode_forward_task(void *arg)
 {
-    int32_t ch = (int32_t)(intptr_t)arg;
-    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    bool started_active = g_printer_sync;
     int idx = ch - 1;
 
     if (!filament_lock(2000)) {
@@ -1572,6 +1661,16 @@ static void filament_gcode_forward_task(void *arg)
     ESP_LOGI(TAG, "[G进料] 发送 M621 S%dA", (int)(ch - 1));
     send_official_m621(ch);
 
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+    }
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+        ESP_LOGI(TAG, "[切通道] 清除通道 %ld 使用中状态",
+                 (long)g_current_channel);
+    }
     g_current_channel = ch;
     g_channel_state[ch - 1] = 3;
     filament_save_config();
@@ -1639,8 +1738,8 @@ static void filament_gcode_backward_task(void *arg)
 
 static void filament_gcode_load_task(void *arg)
 {
-    int32_t ch = (int32_t)(intptr_t)arg;
-    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
+    bool started_active = g_printer_sync;
 
     if (!filament_lock(2000)) {
         ESP_LOGW(TAG, "[G装载] 换料忙，放弃");
@@ -1714,6 +1813,16 @@ static void filament_gcode_load_task(void *arg)
     ESP_LOGI(TAG, "[G装载] 第二步：进目标料 ch=%ld temp=%d", (long)ch, tar_temp);
     send_official_load_seq(ch, tar_temp);
 
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+    }
+    if (g_current_channel >= 1 && g_current_channel <= 8 &&
+        g_current_channel != ch) {
+        g_channel_state[g_current_channel - 1] = 0;
+        ESP_LOGI(TAG, "[切通道] 清除通道 %ld 使用中状态",
+                 (long)g_current_channel);
+    }
     g_current_channel = ch;
     g_channel_state[ch - 1] = 3;
     filament_save_config();
