@@ -445,6 +445,10 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "buffer_gpio", g_buffer_switch_gpio);
     cJSON_AddNumberToObject(root, "buffer_feed", g_buffer_feed_ms);
     cJSON_AddNumberToObject(root, "buffer_cooldown", g_buffer_cooldown_ms);
+    cJSON_AddNumberToObject(root, "buffer_encoder_a", g_buffer_encoder_a_gpio);
+    cJSON_AddNumberToObject(root, "buffer_encoder_b", g_buffer_encoder_b_gpio);
+    cJSON_AddBoolToObject(root, "buffer_encoder_reverse", g_buffer_encoder_reverse);
+    cJSON_AddBoolToObject(root, "buffer_forward", filament_buffer_forward_recent(500));
     cJSON_AddNumberToObject(root, "feed_timeout", g_feed_timeout_ms);
     cJSON_AddNumberToObject(root, "uload_wait_timeout", g_uload_wait_timeout_ms);
 
@@ -459,6 +463,7 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(item, "color", g_channels[i].color);   // 必须有这行
         cJSON_AddNumberToObject(item, "state", filament_get_state(g_channels[i].id));
         cJSON_AddBoolToObject(item, "reverse", g_channels[i].reverse);
+        cJSON_AddBoolToObject(item, "enabled", g_channel_enabled[i]);
         cJSON_AddItemToArray(arr, item);
     }
     cJSON_AddItemToObject(root, "channels", arr);
@@ -518,6 +523,11 @@ static esp_err_t filament_action_post_handler(httpd_req_t *req)
     }
 
     int ch = atoi(ch_str);
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
 
     if (strcmp(action, "forward") == 0) {
         filament_forward_async(ch);
@@ -529,6 +539,29 @@ static esp_err_t filament_action_post_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t filament_channel_enable_post_handler(httpd_req_t *req)
+{
+    char buf[64];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "recv failed");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    char ch_str[8] = {0}, enabled_str[8] = {0};
+    if (httpd_query_key_value(buf, "ch", ch_str, sizeof(ch_str)) != ESP_OK ||
+        httpd_query_key_value(buf, "enabled", enabled_str, sizeof(enabled_str)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing field");
+        return ESP_FAIL;
+    }
+
+    bool ok = filament_set_channel_enabled(atoi(ch_str), atoi(enabled_str) != 0);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, ok ? "{\"ok\":true}" : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -630,6 +663,19 @@ static esp_err_t filament_sync_post_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/* ---------- 重启设备 API ---------- */
+static esp_err_t reboot_post_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+
+    /* 延迟 500ms 让响应先发出去 */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+
     return ESP_OK;
 }
 
@@ -836,6 +882,7 @@ static esp_err_t filament_buffer_post_handler(httpd_req_t *req)
     buf[ret] = '\0';
 
     char gpio_str[8] = {0}, feed_str[16] = {0}, cool_str[16] = {0};
+    char enc_a_str[8] = {0}, enc_b_str[8] = {0}, enc_rev_str[8] = {0};
     if (httpd_query_key_value(buf, "gpio", gpio_str, sizeof(gpio_str)) != ESP_OK ||
         httpd_query_key_value(buf, "feed", feed_str, sizeof(feed_str)) != ESP_OK ||
         httpd_query_key_value(buf, "cooldown", cool_str, sizeof(cool_str)) != ESP_OK) {
@@ -846,6 +893,17 @@ static esp_err_t filament_buffer_post_handler(httpd_req_t *req)
     filament_set_buffer_switch(atoi(gpio_str));
     filament_set_buffer_feed(atoi(feed_str));
     filament_set_buffer_cooldown(atoi(cool_str));
+    bool has_enc_a = httpd_query_key_value(buf, "encoder_a", enc_a_str, sizeof(enc_a_str)) == ESP_OK;
+    bool has_enc_b = httpd_query_key_value(buf, "encoder_b", enc_b_str, sizeof(enc_b_str)) == ESP_OK;
+    bool has_enc_rev = httpd_query_key_value(buf, "encoder_reverse", enc_rev_str, sizeof(enc_rev_str)) == ESP_OK;
+    if (has_enc_a != has_enc_b || (has_enc_a && !has_enc_rev)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "incomplete encoder config");
+        return ESP_FAIL;
+    }
+    if (has_enc_a && !filament_set_buffer_encoder(atoi(enc_a_str), atoi(enc_b_str), atoi(enc_rev_str) != 0)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid encoder GPIO");
+        return ESP_FAIL;
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
@@ -905,6 +963,7 @@ static void register_all_handlers(httpd_handle_t server)
     httpd_uri_t filament_get = { .uri="/filament", .method=HTTP_GET, .handler=filament_get_handler };
     httpd_uri_t filament_time = { .uri="/filament/time", .method=HTTP_POST, .handler=filament_time_post_handler };
     httpd_uri_t filament_action = { .uri="/filament/action", .method=HTTP_POST, .handler=filament_action_post_handler };
+    httpd_uri_t filament_channel_enable = { .uri="/filament/channel/enable", .method=HTTP_POST, .handler=filament_channel_enable_post_handler };
 
     httpd_register_uri_handler(server, &root);
     httpd_register_uri_handler(server, &wifi_page);
@@ -920,6 +979,7 @@ static void register_all_handlers(httpd_handle_t server)
     httpd_register_uri_handler(server, &filament_get);
     httpd_register_uri_handler(server, &filament_time);
     httpd_register_uri_handler(server, &filament_action);
+    httpd_register_uri_handler(server, &filament_channel_enable);
     httpd_uri_t filament_slow = { .uri="/filament/slow", .method=HTTP_POST, .handler=filament_slow_post_handler };
     httpd_register_uri_handler(server, &filament_slow);
     httpd_uri_t filament_buffer = { .uri="/filament/buffer", .method=HTTP_POST, .handler=filament_buffer_post_handler };
@@ -930,6 +990,8 @@ static void register_all_handlers(httpd_handle_t server)
     httpd_register_uri_handler(server, &filament_color);
     httpd_uri_t logs_get = { .uri="/logs", .method=HTTP_GET, .handler=logs_get_handler };
     httpd_register_uri_handler(server, &logs_get);
+    httpd_uri_t reboot_post = { .uri="/reboot", .method=HTTP_POST, .handler=reboot_post_handler };
+    httpd_register_uri_handler(server, &reboot_post);
     httpd_uri_t ota_page = { .uri="/ota", .method=HTTP_GET, .handler=ota_page_get_handler };
     httpd_uri_t ota_upload = { .uri="/ota/upload", .method=HTTP_POST, .handler=ota_upload_handler };
     httpd_register_uri_handler(server, &ota_page);

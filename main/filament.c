@@ -255,10 +255,10 @@ filament_channel_t g_channels[8] = {
     {2, 10, 6,  6000, 5000, "通道2", "PETG", "#ffffff", false,},
     {3, 5,  4,  6000, 5000, "通道3", "PETG", "#ff0000", false,},
     {4, 8,  9,  6000, 5000, "通道4", "PETG", "#0000ff", false,},
-    {5, -1, -1, 6000, 5000, "通道5", "PETG", "#00ff00", false,},
-    {6, -1, -1, 6000, 5000, "通道6", "PETG", "#ffff00", false,},
-    {7, -1, -1, 6000, 5000, "通道7", "PETG", "#808080", false,},
-    {8, -1, -1, 6000, 5000, "通道8", "PETG", "#ffffff", false,},};
+    {5, 0,  1,  6000, 5000, "通道5", "PETG", "#00ff00", false,},
+    {6, 20, 21, 6000, 5000, "通道6", "PETG", "#ffff00", false,},
+    {7, 12, 13, 6000, 5000, "通道7", "PETG", "#808080", false,},
+    {8, 18, 19, 6000, 5000, "通道8", "PETG", "#ffffff", false,},};
 
 int32_t g_current_channel = 0;
 bool    g_printer_sync = false;
@@ -267,6 +267,15 @@ int32_t g_slow_feed_gap_ms   = 600;
 int32_t g_buffer_switch_gpio = -1;
 int32_t g_buffer_feed_ms     = 500;
 int32_t g_buffer_cooldown_ms = 1000;
+int32_t g_buffer_encoder_a_gpio = -1;
+int32_t g_buffer_encoder_b_gpio = -1;
+bool g_buffer_encoder_reverse = false;
+bool g_channel_enabled[8] = { true, true, true, true, true, true, false, false };
+
+static volatile uint8_t s_buffer_encoder_state;
+static volatile int64_t s_buffer_encoder_last_forward_us;
+static portMUX_TYPE s_buffer_encoder_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_buffer_encoder_gpio_initialized;
 int32_t g_feed_timeout_ms    = 180000;
 int32_t g_uload_wait_timeout_ms = 15000;   /* 退料等待超时，默认 15 秒 */
 
@@ -276,6 +285,40 @@ int32_t filament_get_state(int32_t ch)
 {
     if (ch < 1 || ch > 8) return 0;
     return g_channel_state[ch - 1];
+}
+
+bool filament_set_channel_enabled(int32_t ch, bool enabled)
+{
+    if (ch != 7 && ch != 8) return false;
+    int idx = ch - 1;
+    if (s_filament_busy || g_channel_state[idx] == 1 || g_channel_state[idx] == 2) return false;
+    if (!enabled && g_current_channel == ch &&
+        strcmp(g_bambu_status.gcode_state, "RUNNING") == 0) return false;
+    if (g_channel_enabled[idx] == enabled) return true;
+
+    gpio_num_t forward = (gpio_num_t)g_channels[idx].forward_gpio;
+    gpio_num_t backward = (gpio_num_t)g_channels[idx].backward_gpio;
+    if (enabled) {
+        gpio_reset_pin(forward);
+        gpio_reset_pin(backward);
+        if (gpio_set_direction(forward, GPIO_MODE_OUTPUT) != ESP_OK ||
+            gpio_set_direction(backward, GPIO_MODE_OUTPUT) != ESP_OK) {
+            gpio_reset_pin(forward);
+            gpio_reset_pin(backward);
+            return false;
+        }
+        gpio_set_level(forward, 0);
+        gpio_set_level(backward, 0);
+    } else {
+        gpio_set_level(forward, 0);
+        gpio_set_level(backward, 0);
+        gpio_reset_pin(forward);
+        gpio_reset_pin(backward);
+    }
+
+    g_channel_enabled[idx] = enabled;
+    filament_save_config();
+    return true;
 }
 
 /* ============================================================
@@ -373,6 +416,124 @@ void filament_set_buffer_switch(int32_t gpio) { g_buffer_switch_gpio = gpio; fil
 void filament_set_buffer_feed(int32_t ms)     { if (ms > 0 && ms < 10000) g_buffer_feed_ms = ms; filament_save_config(); }
 void filament_set_buffer_cooldown(int32_t ms) { if (ms >= 0 && ms < 60000) g_buffer_cooldown_ms = ms; filament_save_config(); }
 
+static bool buffer_encoder_gpio_valid(int32_t gpio_a, int32_t gpio_b)
+{
+    if (gpio_a == -1 && gpio_b == -1) return true;
+    if (gpio_a < 0 || gpio_a >= GPIO_NUM_MAX ||
+        gpio_b < 0 || gpio_b >= GPIO_NUM_MAX || gpio_a == gpio_b) return false;
+    if (gpio_a == g_buffer_switch_gpio || gpio_b == g_buffer_switch_gpio) return false;
+    for (int i = 0; i < 8; i++) {
+        if (gpio_a == g_channels[i].forward_gpio || gpio_a == g_channels[i].backward_gpio ||
+            gpio_b == g_channels[i].forward_gpio || gpio_b == g_channels[i].backward_gpio) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void buffer_encoder_isr(void *arg)
+{
+    (void)arg;
+    uint8_t current = (gpio_get_level((gpio_num_t)g_buffer_encoder_a_gpio) << 1) |
+                      gpio_get_level((gpio_num_t)g_buffer_encoder_b_gpio);
+    uint8_t previous = s_buffer_encoder_state;
+    int direction = 0;
+
+    if ((previous == 0 && current == 1) || (previous == 1 && current == 3) ||
+        (previous == 3 && current == 2) || (previous == 2 && current == 0)) {
+        direction = 1;
+    } else if ((previous == 1 && current == 0) || (previous == 3 && current == 1) ||
+               (previous == 2 && current == 3) || (previous == 0 && current == 2)) {
+        direction = -1;
+    }
+
+    s_buffer_encoder_state = current;
+    if (g_buffer_encoder_reverse) direction = -direction;
+    if (direction > 0) {
+        portENTER_CRITICAL_ISR(&s_buffer_encoder_mux);
+        s_buffer_encoder_last_forward_us = esp_timer_get_time();
+        portEXIT_CRITICAL_ISR(&s_buffer_encoder_mux);
+    }
+}
+
+static void buffer_encoder_remove_gpio(void)
+{
+    if (!s_buffer_encoder_gpio_initialized) return;
+    gpio_intr_disable((gpio_num_t)g_buffer_encoder_a_gpio);
+    gpio_intr_disable((gpio_num_t)g_buffer_encoder_b_gpio);
+    gpio_isr_handler_remove((gpio_num_t)g_buffer_encoder_a_gpio);
+    gpio_isr_handler_remove((gpio_num_t)g_buffer_encoder_b_gpio);
+    gpio_reset_pin((gpio_num_t)g_buffer_encoder_a_gpio);
+    gpio_reset_pin((gpio_num_t)g_buffer_encoder_b_gpio);
+    s_buffer_encoder_gpio_initialized = false;
+}
+
+static bool buffer_encoder_configure_gpio(void)
+{
+    if (g_buffer_encoder_a_gpio < 0 || g_buffer_encoder_b_gpio < 0) return true;
+
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+
+    gpio_reset_pin((gpio_num_t)g_buffer_encoder_a_gpio);
+    gpio_reset_pin((gpio_num_t)g_buffer_encoder_b_gpio);
+    gpio_set_direction((gpio_num_t)g_buffer_encoder_a_gpio, GPIO_MODE_INPUT);
+    gpio_set_direction((gpio_num_t)g_buffer_encoder_b_gpio, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)g_buffer_encoder_a_gpio, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode((gpio_num_t)g_buffer_encoder_b_gpio, GPIO_PULLUP_ONLY);
+    s_buffer_encoder_state = (gpio_get_level((gpio_num_t)g_buffer_encoder_a_gpio) << 1) |
+                             gpio_get_level((gpio_num_t)g_buffer_encoder_b_gpio);
+    gpio_set_intr_type((gpio_num_t)g_buffer_encoder_a_gpio, GPIO_INTR_ANYEDGE);
+    gpio_set_intr_type((gpio_num_t)g_buffer_encoder_b_gpio, GPIO_INTR_ANYEDGE);
+    if (gpio_isr_handler_add((gpio_num_t)g_buffer_encoder_a_gpio, buffer_encoder_isr, NULL) != ESP_OK ||
+        gpio_isr_handler_add((gpio_num_t)g_buffer_encoder_b_gpio, buffer_encoder_isr, NULL) != ESP_OK) {
+        gpio_isr_handler_remove((gpio_num_t)g_buffer_encoder_a_gpio);
+        gpio_isr_handler_remove((gpio_num_t)g_buffer_encoder_b_gpio);
+        return false;
+    }
+    s_buffer_encoder_gpio_initialized = true;
+    return true;
+}
+
+bool filament_set_buffer_encoder(int32_t gpio_a, int32_t gpio_b, bool reverse)
+{
+    if (!buffer_encoder_gpio_valid(gpio_a, gpio_b)) return false;
+
+    int32_t old_a = g_buffer_encoder_a_gpio;
+    int32_t old_b = g_buffer_encoder_b_gpio;
+    bool old_reverse = g_buffer_encoder_reverse;
+    buffer_encoder_remove_gpio();
+
+    g_buffer_encoder_a_gpio = gpio_a;
+    g_buffer_encoder_b_gpio = gpio_b;
+    g_buffer_encoder_reverse = reverse;
+    if (!buffer_encoder_configure_gpio()) {
+        g_buffer_encoder_a_gpio = old_a;
+        g_buffer_encoder_b_gpio = old_b;
+        g_buffer_encoder_reverse = old_reverse;
+        buffer_encoder_configure_gpio();
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_buffer_encoder_mux);
+    s_buffer_encoder_last_forward_us = 0;
+    portEXIT_CRITICAL(&s_buffer_encoder_mux);
+    filament_save_config();
+    return true;
+}
+
+bool filament_buffer_forward_recent(uint32_t window_ms)
+{
+    int64_t last_forward_us;
+    portENTER_CRITICAL(&s_buffer_encoder_mux);
+    last_forward_us = s_buffer_encoder_last_forward_us;
+    portEXIT_CRITICAL(&s_buffer_encoder_mux);
+
+    int64_t now_us = esp_timer_get_time();
+    return last_forward_us > 0 && now_us >= last_forward_us &&
+           now_us - last_forward_us <= (int64_t)window_ms * 1000;
+}
+
 void filament_save_config(void)
 {
     nvs_handle_t h;
@@ -385,6 +546,9 @@ void filament_save_config(void)
     nvs_set_i32(h, "buf_gpio",      g_buffer_switch_gpio);
     nvs_set_i32(h, "buf_feed",      g_buffer_feed_ms);
     nvs_set_i32(h, "buf_cool",      g_buffer_cooldown_ms);
+    nvs_set_i32(h, "buf_enc_a",     g_buffer_encoder_a_gpio);
+    nvs_set_i32(h, "buf_enc_b",     g_buffer_encoder_b_gpio);
+    nvs_set_i32(h, "buf_enc_rev",   g_buffer_encoder_reverse ? 1 : 0);
     nvs_set_i32(h, "feed_timeout",  g_feed_timeout_ms);
     nvs_set_i32(h, "uload_wait",    g_uload_wait_timeout_ms);
 
@@ -400,6 +564,8 @@ void filament_save_config(void)
         nvs_set_str(h, key, g_channels[i].color);
         snprintf(key, sizeof(key), "rev%d", i);
         nvs_set_i32(h, key, g_channels[i].reverse ? 1 : 0);
+        snprintf(key, sizeof(key), "en%d", i);
+        nvs_set_i32(h, key, g_channel_enabled[i] ? 1 : 0);
     }
 
     nvs_commit(h);
@@ -423,6 +589,9 @@ void filament_load_config(void)
     if (nvs_get_i32(h, "buf_gpio",     &val) == ESP_OK) g_buffer_switch_gpio = val;
     if (nvs_get_i32(h, "buf_feed",     &val) == ESP_OK) g_buffer_feed_ms     = val;
     if (nvs_get_i32(h, "buf_cool",     &val) == ESP_OK) g_buffer_cooldown_ms = val;
+    if (nvs_get_i32(h, "buf_enc_a",    &val) == ESP_OK) g_buffer_encoder_a_gpio = val;
+    if (nvs_get_i32(h, "buf_enc_b",    &val) == ESP_OK) g_buffer_encoder_b_gpio = val;
+    if (nvs_get_i32(h, "buf_enc_rev",  &val) == ESP_OK) g_buffer_encoder_reverse = (val != 0);
     if (nvs_get_i32(h, "feed_timeout", &val) == ESP_OK) g_feed_timeout_ms    = val;
     if (nvs_get_i32(h, "uload_wait",   &val) == ESP_OK) g_uload_wait_timeout_ms = val;
 
@@ -442,6 +611,10 @@ void filament_load_config(void)
         if (nvs_get_i32(h, key, &val) == ESP_OK) {
             g_channels[i].reverse = (val != 0);
         }
+        snprintf(key, sizeof(key), "en%d", i);
+        if (nvs_get_i32(h, key, &val) == ESP_OK) {
+            g_channel_enabled[i] = (val != 0);
+        }
     }
 
     nvs_close(h);
@@ -458,30 +631,39 @@ void filament_load_config(void)
 void filament_init(void)
 {
     filament_mutex_init();
+    filament_load_config();
 
     for (int i = 0; i < 8; i++) {
+        if (!g_channel_enabled[i]) continue;
         int fwd = g_channels[i].forward_gpio;
         int bwd = g_channels[i].backward_gpio;
 
-        if (fwd >= 0 && fwd <= 10) {
+        if (fwd >= 0 && fwd < GPIO_NUM_MAX) {
             gpio_reset_pin((gpio_num_t)fwd);
             gpio_set_direction((gpio_num_t)fwd, GPIO_MODE_OUTPUT);
             gpio_set_level((gpio_num_t)fwd, 0);
         }
-        if (bwd >= 0 && bwd <= 10) {
+        if (bwd >= 0 && bwd < GPIO_NUM_MAX) {
             gpio_reset_pin((gpio_num_t)bwd);
             gpio_set_direction((gpio_num_t)bwd, GPIO_MODE_OUTPUT);
             gpio_set_level((gpio_num_t)bwd, 0);
         }
     }
 
-    if (g_buffer_switch_gpio >= 0 && g_buffer_switch_gpio <= 10) {
+    if (g_buffer_switch_gpio >= 0 && g_buffer_switch_gpio < GPIO_NUM_MAX) {
         gpio_reset_pin((gpio_num_t)g_buffer_switch_gpio);
         gpio_set_direction((gpio_num_t)g_buffer_switch_gpio, GPIO_MODE_INPUT);
         gpio_set_pull_mode((gpio_num_t)g_buffer_switch_gpio, GPIO_PULLUP_ONLY);
     }
 
-    filament_load_config();
+    if (buffer_encoder_gpio_valid(g_buffer_encoder_a_gpio, g_buffer_encoder_b_gpio) &&
+        buffer_encoder_configure_gpio()) {
+        s_buffer_encoder_gpio_initialized = g_buffer_encoder_a_gpio >= 0;
+    } else {
+        g_buffer_encoder_a_gpio = -1;
+        g_buffer_encoder_b_gpio = -1;
+        ESP_LOGW(TAG, "缓冲器编码器 GPIO 配置无效，已禁用方向检测");
+    }
     ESP_LOGI(TAG, "GPIO 初始化完成，当前通道: %ld", (long)g_current_channel);
 }
 
@@ -490,7 +672,7 @@ void filament_init(void)
  * ============================================================ */
 void filament_forward(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     int idx = ch - 1;
 
     /* ★ 根据 reverse 选实际 GPIO */
@@ -516,7 +698,7 @@ void filament_forward(int32_t ch)
 
 void filament_backward(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     int idx = ch - 1;
 
     /* ★ 根据 reverse 选实际 GPIO */
@@ -561,8 +743,7 @@ static void filament_uload_task(void *arg)
             continue;
         }
 
-        ESP_LOGI(TAG, "[退料-被动] ams_status: %d (%s)", ams, ams_status_desc(ams));
-
+        /* ★ 调试日志已关闭（方案三）：260 状态变化不再打印 */
 
         /* ★ 尝试拿锁，拿不到说明别的任务在动，跳过 */
         if (!filament_lock(1000)) {
@@ -643,28 +824,11 @@ static void filament_load_task(void *arg)
         int ams = g_bambu_status.ams_status;
         int hw  = g_bambu_status.hw_switch_state;
 
+        /* ★ 调试日志已关闭（方案三）：ams_status / hw_switch 变化不再打印 */
         if (ams != prev_ams) {
-            if (ams == 261 || ams == 263 || ams == 0 || ams == 768) {
-                int log_ch = (g_target_channel_signal >= 1 && g_target_channel_signal <= 8)
-
-                             ? g_target_channel_signal : g_current_channel;
-
-                ESP_LOGI(TAG, "[进料-被动] [ch=%d] ams_status: %d -> %d (%s)",
-
-                         log_ch, prev_ams, ams, ams_status_desc(ams));
-            }
             prev_ams = ams;
         }
         if (hw != prev_hw) {
-            if (hw == 2 || hw == 3) {
-                int log_ch = (g_target_channel_signal >= 1 && g_target_channel_signal <= 8)
-
-                             ? g_target_channel_signal : g_current_channel;
-
-                ESP_LOGI(TAG, "[进料-被动] [ch=%d] hw_switch: %d -> %d (%s)",
-
-                         log_ch, prev_hw, hw, hw_switch_desc(hw));
-            }
             prev_hw = hw;
         }
 
@@ -717,6 +881,18 @@ static void filament_load_task(void *arg)
                     ESP_LOGI(TAG, "[进料] 无信号，回退到当前通道 %d", target_ch);
                 } else {
                     target_ch = 1;
+                }
+
+                if (!g_channel_enabled[target_ch - 1]) {
+                    ESP_LOGW(TAG, "[进料] 目标通道 %d 已关闭，跳过送料", target_ch);
+                    g_target_channel_signal = 0;
+                    s_last_handled_ams = ams;
+                    if (!g_printer_sync) {
+                        filament_lock(portMAX_DELAY);
+                        s_filament_busy = false;
+                        filament_unlock();
+                    }
+                    break;
                 }
 
                 ESP_LOGI(TAG, "[进料-被动] 检测到 %d，目标通道 %d（信号=%d）",
@@ -862,8 +1038,7 @@ static void bed_signal_task(void *arg)
 
         if (bed >= 1 && bed <= 8) {
             if (bed != prev_sig) {
-                ESP_LOGI(TAG, "[信号] 记录通道 = %d（当前通道 = %d）",
-                     bed, (int)g_current_channel);
+                /* ★ 调试日志已关闭（方案三） */
                 g_target_channel_signal = bed;
                 prev_sig = bed;
             }
@@ -1394,21 +1569,21 @@ bambu_send_change_filament(old_ch, 0);
  * ============================================================ */
 void filament_forward_async(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_forward_manual_task, "fil_fwd", 4096,
                 (void*)(intptr_t)ch, 5, NULL);
 }
 
 void filament_backward_async(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_backward_manual_task, "fil_bwd", 4096,
                 (void*)(intptr_t)ch, 5, NULL);
 }
 
 void filament_load_async(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_load_manual_task, "fil_load_m", 4096,
                 (void*)(intptr_t)ch, 5, NULL);
 }
@@ -1442,7 +1617,10 @@ static void filament_buffer_task(void *arg)
 
         if (g_buffer_switch_gpio < 0) continue;
         if (strcmp(g_bambu_status.gcode_state, "RUNNING") != 0) continue;
+        if (!bambu_mqtt_toolhead_moving()) continue;
+        if (g_buffer_encoder_a_gpio >= 0 && filament_buffer_forward_recent(500)) continue;
         if (g_current_channel < 1 || g_current_channel > 8) continue;
+        if (!g_channel_enabled[g_current_channel - 1]) continue;
 
         int idx = g_current_channel - 1;
         if (g_channels[idx].forward_gpio < 0) continue;
@@ -1480,6 +1658,8 @@ static void auto_swap_monitor_task(void *arg)
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* ★ 调试日志已关闭（方案三） */
 
         if (!g_printer_sync) continue;
 
@@ -1577,7 +1757,6 @@ void filament_slow_test_async(int32_t ch, int32_t pulse_ms,
 static void filament_gcode_forward_task(void *arg)
 {
     int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
-    bool started_active = g_printer_sync;
     int idx = ch - 1;
 
     if (!filament_lock(2000)) {
@@ -1739,7 +1918,6 @@ static void filament_gcode_backward_task(void *arg)
 static void filament_gcode_load_task(void *arg)
 {
     int32_t ch = (int32_t)(intptr_t)arg;    if (ch < 1 || ch > 8) { vTaskDelete(NULL); return; }
-    bool started_active = g_printer_sync;
 
     if (!filament_lock(2000)) {
         ESP_LOGW(TAG, "[G装载] 换料忙，放弃");
@@ -1901,20 +2079,20 @@ static void filament_gcode_load_task(void *arg)
 
 void filament_gcode_forward_async(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_gcode_forward_task, "g_fwd", 4096,
                 (void*)(intptr_t)ch, 5, NULL);
 }
 
 void filament_gcode_backward_async(int32_t ch)
 {
-    (void)ch;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_gcode_backward_task, "g_bwd", 4096, NULL, 5, NULL);
 }
 
 void filament_gcode_load_async(int32_t ch)
 {
-    if (ch < 1 || ch > 8) return;
+    if (ch < 1 || ch > 8 || !g_channel_enabled[ch - 1]) return;
     xTaskCreate(filament_gcode_load_task, "g_load", 4096,
                 (void*)(intptr_t)ch, 5, NULL);
 }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "esp_timer.h"
 
 static const char *TAG = "bambu_mqtt";
 
@@ -10,6 +11,12 @@ bambu_status_t g_bambu_status = { .last_real_bed_target = 60 };
 
 static esp_mqtt_client_handle_t s_client = NULL;
 static bambu_config_t s_cfg = {0};
+static double s_prev_toolhead_x;
+static double s_prev_toolhead_y;
+static double s_prev_toolhead_z;
+static bool s_toolhead_position_valid;
+
+#define TOOLHEAD_MOTION_WINDOW_MS 4000
 
 static const char *PUSHALL_CMD =
     R"({"pushing":{"sequence_id":"0","command":"pushall"}})";
@@ -223,7 +230,7 @@ static void parse_report(const char *data, int len)
     parse_lights(print);
     parse_tray(print);
 
-    /* 解析 toolhead 位置 */
+    /* 解析 toolhead 位置，并记录最近一次位移时间 */
     cJSON *device = cJSON_GetObjectItem(print, "device");
     if (device) {
         cJSON *toolhead = cJSON_GetObjectItem(device, "toolhead");
@@ -231,9 +238,24 @@ static void parse_report(const char *data, int len)
             cJSON *x = cJSON_GetObjectItem(toolhead, "pos_x");
             cJSON *y = cJSON_GetObjectItem(toolhead, "pos_y");
             cJSON *z = cJSON_GetObjectItem(toolhead, "pos_z");
-            if (cJSON_IsNumber(x)) g_bambu_status.toolhead_x = x->valuedouble;
-            if (cJSON_IsNumber(y)) g_bambu_status.toolhead_y = y->valuedouble;
-            if (cJSON_IsNumber(z)) g_bambu_status.toolhead_z = z->valuedouble;
+            if (cJSON_IsNumber(x) && cJSON_IsNumber(y) && cJSON_IsNumber(z)) {
+                double pos_x = x->valuedouble;
+                double pos_y = y->valuedouble;
+                double pos_z = z->valuedouble;
+                if (s_toolhead_position_valid &&
+                    (pos_x - s_prev_toolhead_x > 0.05 || s_prev_toolhead_x - pos_x > 0.05 ||
+                     pos_y - s_prev_toolhead_y > 0.05 || s_prev_toolhead_y - pos_y > 0.05 ||
+                     pos_z - s_prev_toolhead_z > 0.05 || s_prev_toolhead_z - pos_z > 0.05)) {
+                    g_bambu_status.toolhead_last_move_ms = esp_timer_get_time() / 1000;
+                }
+                s_prev_toolhead_x = pos_x;
+                s_prev_toolhead_y = pos_y;
+                s_prev_toolhead_z = pos_z;
+                s_toolhead_position_valid = true;
+                g_bambu_status.toolhead_x = pos_x;
+                g_bambu_status.toolhead_y = pos_y;
+                g_bambu_status.toolhead_z = pos_z;
+            }
         }
     }
 
@@ -381,6 +403,14 @@ void bambu_mqtt_stop(void)
     g_bambu_status.connected = false;
 }
 
+bool bambu_mqtt_toolhead_moving(void)
+{
+    int64_t last_move_ms = g_bambu_status.toolhead_last_move_ms;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    return last_move_ms > 0 && now_ms >= last_move_ms &&
+           now_ms - last_move_ms <= TOOLHEAD_MOTION_WINDOW_MS;
+}
+
 void bambu_mqtt_get_status_json(char *out, size_t out_len)
 {
     time_t last_sec = g_bambu_status.last_update_ms / 1000;
@@ -416,6 +446,10 @@ void bambu_mqtt_get_status_json(char *out, size_t out_len)
         "\"extruder_snow\":%d,"
         "\"extruder_star\":%d,"
         "\"extruder_temp\":%d,"
+        "\"toolhead_x\":%.2f,"
+        "\"toolhead_y\":%.2f,"
+        "\"toolhead_z\":%.2f,"
+        "\"toolhead_moving\":%s,"
         "\"last_gcode_line\":\"%s\","
         "\"gcode_line_count\":%u,"
         "\"last_update\":%lld"
@@ -449,6 +483,10 @@ void bambu_mqtt_get_status_json(char *out, size_t out_len)
         g_bambu_status.extruder_snow,
         g_bambu_status.extruder_star,
         g_bambu_status.extruder_temp,
+        g_bambu_status.toolhead_x,
+        g_bambu_status.toolhead_y,
+        g_bambu_status.toolhead_z,
+        bambu_mqtt_toolhead_moving() ? "true" : "false",
         g_bambu_status.last_gcode_line,
         (unsigned int)g_bambu_status.gcode_line_count,
         (long long)last_sec

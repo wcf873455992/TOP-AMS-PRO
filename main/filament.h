@@ -28,6 +28,10 @@ extern int32_t g_uload_wait_timeout_ms;
 extern int32_t g_buffer_switch_gpio;
 extern int32_t g_buffer_feed_ms;
 extern int32_t g_buffer_cooldown_ms;
+extern int32_t g_buffer_encoder_a_gpio;
+extern int32_t g_buffer_encoder_b_gpio;
+extern bool    g_buffer_encoder_reverse;
+extern bool    g_channel_enabled[8];
 
 void filament_init(void);
 void filament_save_config(void);
@@ -49,6 +53,7 @@ void filament_set_reverse(int32_t ch, bool reverse);
 bool filament_get_reverse(int32_t ch);
 const char* filament_get_color(int32_t ch);
 int32_t filament_get_state(int32_t ch);
+bool filament_set_channel_enabled(int32_t ch, bool enabled);
 
 void filament_set_printer_sync(bool sync);
 bool filament_get_printer_sync(void);
@@ -63,6 +68,8 @@ int32_t filament_get_uload_wait_timeout(void);
 void filament_set_buffer_switch(int32_t gpio);
 void filament_set_buffer_feed(int32_t ms);
 void filament_set_buffer_cooldown(int32_t ms);
+bool filament_set_buffer_encoder(int32_t gpio_a, int32_t gpio_b, bool reverse);
+bool filament_buffer_forward_recent(uint32_t window_ms);
 
 void filament_uload_start(void);
 void filament_load_start(void);

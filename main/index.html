@@ -47,6 +47,8 @@
         .ch-row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
                    margin-bottom: 6px; }
         .ch-title { font-size: 14px; font-weight: bold; white-space: nowrap; }
+        .channel-enable { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #555; }
+        .channel-enable input { margin: 0; }
         .ch-current { font-size: 16px; color: #28a745; font-weight: bold;
                       white-space: nowrap; margin-left: auto; }
         .ch-state { font-size: 14px; color: #007bff; font-weight: bold;
@@ -123,12 +125,19 @@
         <input type="number" id="bufCool" placeholder="间隔" title="最小间隔(ms)" style="width:60px;">
         <button onclick="saveBuffer()">保存</button>
     </div>
+    <div class="slow-feed-row2">
+        <label>料动编码器</label>
+        <input type="number" id="bufEncoderA" placeholder="A GPIO" title="编码器 A 相 GPIO；禁用时留空" style="width:58px;">
+        <input type="number" id="bufEncoderB" placeholder="B GPIO" title="编码器 B 相 GPIO；禁用时留空" style="width:58px;">
+        <label><input type="checkbox" id="bufEncoderReverse" style="width:auto;">反向</label>
+    </div>
     <div id="channels"><div class="loading">加载中...</div></div>
 <h3>设备日志</h3>
     <div id="logPanel" class="log-panel"></div>
     <div style="display: flex; gap: 8px; margin-top: 8px;">
         <button class="clear-btn" onclick="clearLogs()">清空显示</button>
         <button class="clear-btn" onclick="saveLogs()" style="background: #28a745;">另存为</button>
+        <button class="clear-btn" onclick="rebootDevice()" style="background: #dc3545;">重启</button>
     </div>
 
     <div id="toast" class="toast"></div>
@@ -267,6 +276,8 @@
 
             channelsData.forEach(ch => {
                 const isActive = (ch.id === currentCh);
+                const enabled = ch.enabled === true;
+                const disabled = anyBusy || !enabled ? 'disabled' : '';
                 let stateText = '', stateClass = 'ch-state';
                 if (ch.state === 1) stateText = '进料中';
                 else if (ch.state === 2) stateText = '退料中';
@@ -279,12 +290,19 @@
                 });
 
                 const color = ch.color || '#ffffff';
+                const enableControl = (ch.id === 7 || ch.id === 8)
+                    ? '<label class="channel-enable"><input type="checkbox" ' +
+                      (enabled ? 'checked ' : '') + (anyBusy ? 'disabled ' : '') +
+                      'onchange="setChannelEnabled(' + ch.id + ', this.checked)"><span>' +
+                      (enabled ? '打开' : '关闭') + '</span></label>'
+                    : '';
 
                 const div = document.createElement('div');
-                div.className = 'channel' + (isActive ? ' active' : '');
+                div.className = 'channel' + (isActive ? ' active' : '') + (!enabled ? ' disabled' : '');
                 div.innerHTML =
                     '<div class="ch-row1">' +
                     '  <span class="ch-title">通道 ' + ch.id + '</span>' +
+                    enableControl +
                     '  <select class="mat-select" id="mat_' + ch.id + '" onchange="saveMaterial(' + ch.id + ')" ' +
                     '          onfocus="userInteracting=true" onblur="userInteracting=false" ' + disabled + '>' +
                            options +
@@ -339,9 +357,15 @@
                         const bg = document.getElementById('bufGpio');
                         const bf = document.getElementById('bufFeed');
                         const bc = document.getElementById('bufCool');
+                        const bea = document.getElementById('bufEncoderA');
+                        const beb = document.getElementById('bufEncoderB');
+                        const ber = document.getElementById('bufEncoderReverse');
                         if (bg) bg.value = data.buffer_gpio >= 0 ? data.buffer_gpio : '';
                         if (bf) bf.value = data.buffer_feed || 500;
                         if (bc) bc.value = data.buffer_cooldown || 1000;
+                        if (bea) bea.value = data.buffer_encoder_a >= 0 ? data.buffer_encoder_a : '';
+                        if (beb) beb.value = data.buffer_encoder_b >= 0 ? data.buffer_encoder_b : '';
+                        if (ber) ber.checked = !!data.buffer_encoder_reverse;
                         const ft = document.getElementById('feedTimeout');
                         if (ft) ft.value = Math.round((data.feed_timeout || 180000) / 1000);
                         const uw = document.getElementById('uloadWait');
@@ -354,6 +378,22 @@
                     renderChannels();
                 })
                 .catch(() => {});
+        }
+
+        function setChannelEnabled(ch, enabled) {
+            userInteracting = true;
+            fetch('/filament/channel/enable', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'ch=' + ch + '&enabled=' + (enabled ? '1' : '0')
+            })
+            .then(r => r.json())
+            .then(res => showToast(res.ok ? ('通道 ' + ch + (enabled ? ' 已打开' : ' 已关闭')) : '通道忙，无法切换'))
+            .catch(() => showToast('网络错误'))
+            .finally(() => {
+                userInteracting = false;
+                loadChannels();
+            });
         }
 
         function updateModeUI() {
@@ -503,15 +543,20 @@
             const gpio = document.getElementById('bufGpio').value || '-1';
             const feed = document.getElementById('bufFeed').value || '500';
             const cool = document.getElementById('bufCool').value || '1000';
+            const encoderA = document.getElementById('bufEncoderA').value || '-1';
+            const encoderB = document.getElementById('bufEncoderB').value || '-1';
+            const encoderReverse = document.getElementById('bufEncoderReverse').checked ? '1' : '0';
 
             fetch('/filament/buffer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'gpio=' + gpio + '&feed=' + feed + '&cooldown=' + cool
+                body: 'gpio=' + gpio + '&feed=' + feed + '&cooldown=' + cool +
+                    '&encoder_a=' + encoderA + '&encoder_b=' + encoderB +
+                    '&encoder_reverse=' + encoderReverse
             })
             .then(r => r.json())
             .then(res => {
-                if (res.ok) showToast('缓冲: GPIO ' + gpio + ', 送料 ' + feed + 'ms, 间隔 ' + cool + 'ms');
+                if (res.ok) showToast('缓冲参数已保存');
                 else showToast('保存失败');
             })
             .catch(() => showToast('网络错误'));
@@ -622,6 +667,24 @@
             setTimeout(() => URL.revokeObjectURL(url), 1000);
 
             showToast('已保存: ' + filename);
+        }
+
+        function rebootDevice() {
+            if (!confirm("确定要重启设备吗？")) return;
+            showToast("正在重启设备...");
+            fetch("/reboot", { method: "POST" })
+                .then(r => r.json())
+                .then(res => {
+                    if (res.ok) {
+                        showToast("设备将在 3 秒后重启");
+                    } else {
+                        showToast("重启失败");
+                    }
+                })
+                .catch(() => {
+                    // 设备重启后连接会断，catch 正常
+                    showToast("设备正在重启...");
+                });
         }
 
         function toggleReverse(ch) {

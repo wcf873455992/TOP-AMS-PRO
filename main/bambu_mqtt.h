@@ -56,6 +56,7 @@ typedef struct {
     double toolhead_x;
     double toolhead_y;
     double toolhead_z;
+    int64_t toolhead_last_move_ms;
 
     /* 换料前记录的真实热床温度 */
     int last_real_bed_target;
@@ -78,6 +79,7 @@ void bambu_mqtt_init(const bambu_config_t *cfg);
 void bambu_mqtt_request_status(void);
 void bambu_mqtt_stop(void);
 void bambu_mqtt_get_status_json(char *out, size_t out_len);
+bool bambu_mqtt_toolhead_moving(void);
 void bambu_mqtt_publish_raw(const char* payload);
 
 #ifdef __cplusplus
