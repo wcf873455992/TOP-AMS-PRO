@@ -456,6 +456,9 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "buffer_channel_gpio", filament_buffer_channel_gpio());
     cJSON_AddBoolToObject(root, "buffer_feeding", g_buffer_feeding);
     cJSON_AddNumberToObject(root, "buffer_level_changes", (double)g_buffer_level_changes);
+    cJSON_AddStringToObject(root, "buffer_pull", filament_buffer_pull_name());
+    /* ★ 微动辅助送料前置条件：仅打印机 RUNNING（打印中）时才送料 */
+    cJSON_AddBoolToObject(root, "printer_running", filament_printer_running());
     cJSON_AddNumberToObject(root, "feed_timeout", g_feed_timeout_ms);
     cJSON_AddNumberToObject(root, "uload_wait_timeout", g_uload_wait_timeout_ms);
 

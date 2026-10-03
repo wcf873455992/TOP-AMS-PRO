@@ -274,6 +274,7 @@ bool g_channel_enabled[8] = { true, true, true, true, true, true, false, false }
 volatile bool g_buffer_feeding = false;   /* 微动辅助送料是否正在缓慢送料（网页实时显示） */
 volatile uint32_t g_buffer_level_changes = 0;  /* 微动开关电平变化次数（诊断接线用） */
 static int s_buffer_last_level = -1;           /* 上次采样到的电平，-1 = 尚未采样 */
+static bool s_buffer_wait_running = false;     /* 是否正在等打印机进入 RUNNING（避免重复刷日志） */
 
 static volatile uint8_t s_buffer_encoder_state;
 static volatile int64_t s_buffer_encoder_last_forward_us;
@@ -420,12 +421,22 @@ static bool buffer_switch_configure(void)
     gpio_reset_pin(GPIO_NUM_7);
     if (!g_buffer_enabled) return true;
 
+    /* ★ 内部上下拉固定为「上拉」，不随「高/低有效」切换而改变：
+     *   切换有效电平只改变判定基准（哪种电平算有效），引脚电平与上下拉保持原状，
+     *   悬空时电平恒定不变，切换极性后结果必然相反，便于现场测试与排查接线。
+     *   典型接线：开关一端接 GPIO7、另一端接 GND → 常态读出高（无效），按下读出低（有效）。 */
     if (gpio_set_direction(GPIO_NUM_7, GPIO_MODE_INPUT) != ESP_OK ||
-        gpio_set_pull_mode(GPIO_NUM_7, g_buffer_active_high ? GPIO_PULLDOWN_ONLY : GPIO_PULLUP_ONLY) != ESP_OK) {
+        gpio_set_pull_mode(GPIO_NUM_7, GPIO_PULLUP_ONLY) != ESP_OK) {
         gpio_reset_pin(GPIO_NUM_7);
         return false;
     }
     return true;
+}
+
+/* 微动开关引脚的内部上下拉名称（网页显示 / 排查用） */
+const char *filament_buffer_pull_name(void)
+{
+    return g_buffer_enabled ? "pullup" : "none";
 }
 
 bool filament_set_buffer_enabled(bool enabled)
@@ -443,13 +454,10 @@ bool filament_set_buffer_enabled(bool enabled)
 
 bool filament_set_buffer_active_high(bool active_high)
 {
-    bool previous = g_buffer_active_high;
     g_buffer_active_high = active_high;
-    if (!buffer_switch_configure()) {
-        g_buffer_active_high = previous;
-        buffer_switch_configure();
-        return false;
-    }
+    /* ★ 只切换判定基准，不重新配置 GPIO 上下拉（引脚保持内部上拉），方便测试 */
+    ESP_LOGI(TAG, "微动辅助送料有效电平切换为 %s",
+             g_buffer_active_high ? "高有效" : "低有效");
     filament_save_config();
     return true;
 }
@@ -579,6 +587,12 @@ int filament_buffer_level(void)
 {
     if (g_buffer_switch_gpio < 0 || g_buffer_switch_gpio >= GPIO_NUM_MAX) return -1;
     return gpio_get_level((gpio_num_t)g_buffer_switch_gpio);
+}
+
+/* ★ 打印机是否处于 RUNNING（打印中）：微动辅助送料的前置条件 */
+bool filament_printer_running(void)
+{
+    return strcmp(g_bambu_status.gcode_state, "RUNNING") == 0;
 }
 
 /* 当前电平是否构成「有效」（与任务内判断一致） */
@@ -1680,8 +1694,9 @@ void filament_set_uload_time(int32_t ch, int32_t ms)
 
 /* ============================================================
  * 微动辅助送料（GPIO7 微动开关）
- * 使能打开且电平有效 → 持续缓慢送料（脉冲式，参数同「缓慢进料」）
- * 电平无效 → 立即停止
+ * ★ 前置条件：打印机 gcode_state == RUNNING（打印中）
+ * 使能打开 + 当前通道可用 + 电平有效 + 打印中 → 持续缓慢送料（脉冲式，参数同「缓慢进料」）
+ * 任一条件不满足（电平无效 / 打印机非 RUNNING）→ 立即停止
  * ============================================================ */
 static void filament_buffer_task(void *arg)
 {
@@ -1708,8 +1723,21 @@ static void filament_buffer_task(void *arg)
         }
         bool level_on = (level_now == (g_buffer_active_high ? 1 : 0));
 
-        /* ---- 允许条件：使能 + 当前通道可用 + 电平有效 ---- */
-        bool allow = (idx >= 0) && level_on;
+        /* ---- ★ 前置条件：打印机 RUNNING（打印中）才允许辅助送料 ---- */
+        bool running = filament_printer_running();
+        if (idx >= 0 && level_on && !running) {
+            /* 通道可用且电平有效，但打印机不在打印中 → 等待（只提示一次，避免 20ms 刷屏） */
+            if (!s_buffer_wait_running) {
+                s_buffer_wait_running = true;
+                ESP_LOGI(TAG, "微动辅助送料等待打印机进入 RUNNING（当前 %s）",
+                         g_bambu_status.gcode_state[0] ? g_bambu_status.gcode_state : "未知");
+            }
+        } else {
+            s_buffer_wait_running = false;
+        }
+
+        /* ---- 允许条件：使能 + 当前通道可用 + 电平有效 + 打印机 RUNNING ---- */
+        bool allow = (idx >= 0) && level_on && running;
 
         int64_t now = esp_timer_get_time() / 1000;
 

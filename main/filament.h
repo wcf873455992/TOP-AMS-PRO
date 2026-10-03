@@ -79,6 +79,8 @@ int  filament_buffer_level(void);          /* GPIO7 电平：0 低 / 1 高 / -1 
 bool filament_buffer_valid(void);          /* 当前电平是否构成「有效」 */
 int  filament_buffer_target_index(void);   /* 可送料通道下标，-1 不可送料 */
 int  filament_buffer_channel_gpio(void);   /* 当前通道进料 GPIO，-1 未配置 */
+const char* filament_buffer_pull_name(void); /* 微动引脚内部上下拉：pullup / none（固定上拉，不随极性改变） */
+bool filament_printer_running(void);        /* 打印机是否 RUNNING（打印中）——微动辅助送料前置条件 */
 
 void filament_uload_start(void);
 void filament_load_start(void);
