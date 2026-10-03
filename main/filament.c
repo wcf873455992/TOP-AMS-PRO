@@ -283,6 +283,9 @@ static bool s_buffer_encoder_gpio_initialized;
 int32_t g_feed_timeout_ms    = 180000;
 int32_t g_uload_wait_timeout_ms = 15000;   /* 退料等待超时，默认 15 秒 */
 
+/* ★ 通道状态值（对应网页 /filament 的 channels[].state）：
+ *   0 = 空闲；1 = 进料中；2 = 退料中；3 = 使用中；
+ *   4 = 送料中（微动辅助送料 / 缓慢进料测试正在持续送料，网页通道行显示「送料中」） */
 static int32_t g_channel_state[8] = {0};
 
 int32_t filament_get_state(int32_t ch)
@@ -1705,6 +1708,8 @@ static void filament_buffer_task(void *arg)
     int     phase_idx = -1;        /* 正在送料的通道下标 */
     int64_t phase_end = 0;         /* 当前相位结束时刻（ms） */
     int64_t run_start = 0;         /* 本次连续送料起始时刻（ms） */
+    int32_t prev_state = 0;        /* 本次连续送料前该通道的原状态（停止时恢复） */
+    bool    state_owned = false;   /* 通道状态是否被本任务改写为 4（送料中） */
 
     while (1) {
         /* ★ 电平检测步长（与缓慢进料脉冲/间隔配合，松开后最迟 20ms 停止） */
@@ -1746,7 +1751,12 @@ static void filament_buffer_task(void *arg)
             if (phase != BP_IDLE) {
                 if (phase == BP_PULSE) {
                     gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
-                    g_channel_state[phase_idx] = 0;
+                }
+                /* ★ 停止时恢复通道原状态：辅助送料不再把状态在 1/0 之间来回改写，
+                 *   否则网页「进料中」会随脉冲/间隔闪烁，并把「使用中」覆盖掉 */
+                if (state_owned && phase_idx >= 0) {
+                    g_channel_state[phase_idx] = prev_state;
+                    state_owned = false;
                 }
                 g_buffer_feeding = false;
                 ESP_LOGI(TAG, "微动辅助送料停止（持续 %lld ms）",
@@ -1766,7 +1776,14 @@ static void filament_buffer_task(void *arg)
             run_start = now;
             phase_idx = idx;
             g_buffer_feeding = true;
-            g_channel_state[idx] = 1;
+            /* ★ 记录原状态，整个连续送料期间保持不变（不随脉冲/间隔抖动）：
+             *   「使用中」(3) 的通道保持 3；其余通道显示「送料中」(4) */
+            prev_state = g_channel_state[idx];
+            state_owned = false;
+            if (prev_state != 3) {
+                g_channel_state[idx] = 4;
+                state_owned = true;
+            }
             gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 1);
             phase_end = now + pulse_ms;
             phase = BP_PULSE;
@@ -1777,14 +1794,12 @@ static void filament_buffer_task(void *arg)
         case BP_PULSE:                      /* 脉冲结束 → 关断，进入间隔 */
             if (now < phase_end) break;
             gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
-            g_channel_state[phase_idx] = 0;
             phase_end = now + gap_ms;
             phase = BP_GAP;
             break;
 
         case BP_GAP:                        /* 间隔结束 → 重新输出脉冲 */
             if (now < phase_end) break;
-            g_channel_state[phase_idx] = 1;
             gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 1);
             phase_end = now + pulse_ms;
             phase = BP_PULSE;
@@ -1873,15 +1888,22 @@ static void filament_slow_test_task(void *arg)
     ESP_LOGI(TAG, "[slow_test] ch=%d pulse=%d gap=%d dur=%ds",
              ch, pulse, gap, dur);
 
+    /* ★ 测试期间状态保持稳定：使用中(3) 的通道保持 3，其余显示「送料中」(4)，结束后恢复 */
+    int32_t prev_state = g_channel_state[idx];
+    bool state_owned = false;
+    if (prev_state != 3) {
+        g_channel_state[idx] = 4;
+        state_owned = true;
+    }
+
     int64_t end_ms = (esp_timer_get_time() / 1000) + (int64_t)dur * 1000;
     while (esp_timer_get_time() / 1000 < end_ms) {
-        g_channel_state[idx] = 1;
         gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 1);
         vTaskDelay(pdMS_TO_TICKS(pulse));
         gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 0);
-        g_channel_state[idx] = 0;
         vTaskDelay(pdMS_TO_TICKS(gap));
     }
+    if (state_owned) g_channel_state[idx] = prev_state;
 
     ESP_LOGI(TAG, "[slow_test] ch=%d 完成", ch);
     vTaskDelete(NULL);

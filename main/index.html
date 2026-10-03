@@ -286,6 +286,8 @@
                 if (ch.state === 1) stateText = '进料中';
                 else if (ch.state === 2) stateText = '退料中';
                 else if (ch.state === 3) { stateText = '使用中'; stateClass = 'ch-current'; }
+                /* ★ 4 = 送料中（微动辅助送料 / 缓慢进料测试正在持续送料） */
+                else if (ch.state === 4) stateText = '送料中';
 
                 let options = '';
                 MATERIALS.forEach(m => {
