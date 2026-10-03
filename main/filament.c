@@ -1642,7 +1642,7 @@ void filament_set_uload_time(int32_t ch, int32_t ms)
 
 /* ============================================================
  * 微动辅助送料（GPIO7 微动开关）
- * 电平有效 → 持续缓慢送料（脉冲式，参数同「缓慢进料」）
+ * 使能打开且电平有效 → 持续缓慢送料（脉冲式，参数同「缓慢进料」）
  * 电平无效 → 立即停止
  * ============================================================ */
 static void filament_buffer_task(void *arg)
@@ -1670,10 +1670,8 @@ static void filament_buffer_task(void *arg)
         bool level_on = (gpio_get_level((gpio_num_t)g_buffer_switch_gpio) ==
                          (g_buffer_active_high ? 1 : 0));
 
-        /* ---- 允许条件：打印中 + 工具头移动 ---- */
-        bool allow = (idx >= 0) && level_on &&
-                     strcmp(g_bambu_status.gcode_state, "RUNNING") == 0 &&
-                     bambu_mqtt_toolhead_moving();
+        /* ---- 允许条件：使能 + 当前通道可用 + 电平有效 ---- */
+        bool allow = (idx >= 0) && level_on;
 
         int64_t now = esp_timer_get_time() / 1000;
 
