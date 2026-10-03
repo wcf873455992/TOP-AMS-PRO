@@ -1642,38 +1642,88 @@ void filament_set_uload_time(int32_t ch, int32_t ms)
 
 /* ============================================================
  * 微动辅助送料（GPIO7 微动开关）
+ * 电平有效 → 持续缓慢送料（脉冲式，参数同「缓慢进料」）
+ * 电平无效 → 立即停止
  * ============================================================ */
 static void filament_buffer_task(void *arg)
 {
-    int64_t last_feed_time = 0;
+    enum { BP_IDLE, BP_PULSE, BP_GAP };
+    int     phase     = BP_IDLE;   /* 当前相位：空闲 / 脉冲输出 / 脉冲间隔 */
+    int     phase_idx = -1;        /* 正在送料的通道下标 */
+    int64_t phase_end = 0;         /* 当前相位结束时刻（ms） */
+    int64_t run_start = 0;         /* 本次连续送料起始时刻（ms） */
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+        /* ★ 电平检测步长（与缓慢进料脉冲/间隔配合，松开后最迟 20ms 停止） */
+        vTaskDelay(pdMS_TO_TICKS(BUFFER_POLL_MS));
 
-        if (!g_buffer_enabled) continue;
-        if (strcmp(g_bambu_status.gcode_state, "RUNNING") != 0) continue;
-        if (!bambu_mqtt_toolhead_moving()) continue;
-        if (g_buffer_encoder_a_gpio >= 0 && filament_buffer_forward_recent(500)) continue;
-        if (g_current_channel < 1 || g_current_channel > 8) continue;
-        if (!g_channel_enabled[g_current_channel - 1]) continue;
+        /* ---- 当前可送料的通道（使能 + 已配置进料 GPIO） ---- */
+        int idx = -1;
+        if (g_buffer_enabled &&
+            g_current_channel >= 1 && g_current_channel <= 8 &&
+            g_channel_enabled[g_current_channel - 1] &&
+            g_channels[g_current_channel - 1].forward_gpio >= 0) {
+            idx = g_current_channel - 1;
+        }
 
-        int idx = g_current_channel - 1;
-        if (g_channels[idx].forward_gpio < 0) continue;
+        /* ---- 微动开关电平 ---- */
+        bool level_on = (gpio_get_level((gpio_num_t)g_buffer_switch_gpio) ==
+                         (g_buffer_active_high ? 1 : 0));
 
-        int level = gpio_get_level((gpio_num_t)g_buffer_switch_gpio);
-        if (level != (g_buffer_active_high ? 1 : 0)) continue;
+        /* ---- 允许条件：打印中 + 工具头移动 ---- */
+        bool allow = (idx >= 0) && level_on &&
+                     strcmp(g_bambu_status.gcode_state, "RUNNING") == 0 &&
+                     bambu_mqtt_toolhead_moving();
 
         int64_t now = esp_timer_get_time() / 1000;
-        if (now - last_feed_time < BUFFER_COOLDOWN_MS) continue;
 
-        ESP_LOGI(TAG, "微动辅助送料触发，送料 %d ms", BUFFER_FEED_MS);
-        g_channel_state[idx] = 1;
-        gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 1);
-        vTaskDelay(pdMS_TO_TICKS(BUFFER_FEED_MS));
-        gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 0);
-        g_channel_state[idx] = 0;
+        /* ---- 电平无效（或条件不满足 / 换通道）：立即停止缓慢送料 ---- */
+        if (!allow || (phase != BP_IDLE && phase_idx != idx)) {
+            if (phase != BP_IDLE) {
+                if (phase == BP_PULSE) {
+                    gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
+                    g_channel_state[phase_idx] = 0;
+                }
+                ESP_LOGI(TAG, "微动辅助送料停止（持续 %lld ms）",
+                         (long long)(now - run_start));
+                phase = BP_IDLE;
+                phase_idx = -1;
+            }
+            continue;
+        }
 
-        last_feed_time = esp_timer_get_time() / 1000;
+        /* ---- 缓慢进料参数（网页可调，实时生效） ---- */
+        int pulse_ms = (g_slow_feed_pulse_ms > 0)   ? g_slow_feed_pulse_ms : 30;
+        int gap_ms   = (g_slow_feed_gap_ms   >= 0)  ? g_slow_feed_gap_ms   : 600;
+
+        switch (phase) {
+        case BP_IDLE:                       /* 电平刚有效：开始缓慢送料 */
+            run_start = now;
+            phase_idx = idx;
+            g_channel_state[idx] = 1;
+            gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 1);
+            phase_end = now + pulse_ms;
+            phase = BP_PULSE;
+            ESP_LOGI(TAG, "微动辅助送料触发，开始缓慢送料 pulse=%d gap=%d",
+                     pulse_ms, gap_ms);
+            break;
+
+        case BP_PULSE:                      /* 脉冲结束 → 关断，进入间隔 */
+            if (now < phase_end) break;
+            gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
+            g_channel_state[phase_idx] = 0;
+            phase_end = now + gap_ms;
+            phase = BP_GAP;
+            break;
+
+        case BP_GAP:                        /* 间隔结束 → 重新输出脉冲 */
+            if (now < phase_end) break;
+            g_channel_state[phase_idx] = 1;
+            gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 1);
+            phase_end = now + pulse_ms;
+            phase = BP_PULSE;
+            break;
+        }
     }
 }
 

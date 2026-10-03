@@ -27,8 +27,7 @@ extern int32_t g_feed_timeout_ms;
 extern int32_t g_uload_wait_timeout_ms;
 extern int32_t g_buffer_switch_gpio;
 /* 微动辅助送料固定参数（固件内置，网页不可配置） */
-#define BUFFER_FEED_MS      500    /* 每次触发送料时长（ms） */
-#define BUFFER_COOLDOWN_MS  1000   /* 最小触发间隔（ms） */
+#define BUFFER_POLL_MS      20     /* 微动开关电平检测步长（ms） */
 extern int32_t g_buffer_encoder_a_gpio;
 extern int32_t g_buffer_encoder_b_gpio;
 extern bool    g_buffer_encoder_reverse;

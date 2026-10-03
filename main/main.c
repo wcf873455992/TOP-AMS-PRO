@@ -445,8 +445,6 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "buffer_gpio", g_buffer_switch_gpio);
     cJSON_AddBoolToObject(root, "buffer_enabled", g_buffer_enabled);
     cJSON_AddBoolToObject(root, "buffer_active_high", g_buffer_active_high);
-    cJSON_AddNumberToObject(root, "buffer_feed", BUFFER_FEED_MS);
-    cJSON_AddNumberToObject(root, "buffer_cooldown", BUFFER_COOLDOWN_MS);
     cJSON_AddNumberToObject(root, "buffer_encoder_a", g_buffer_encoder_a_gpio);
     cJSON_AddNumberToObject(root, "buffer_encoder_b", g_buffer_encoder_b_gpio);
     cJSON_AddBoolToObject(root, "buffer_encoder_reverse", g_buffer_encoder_reverse);
