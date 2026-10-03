@@ -46,7 +46,7 @@ static char s_pending_pass[65] = {0};
 static bool s_time_synced = false;
 
 /* ---------- 网页日志缓冲 ---------- */
-#define LOG_BUF_LINES   100
+#define LOG_BUF_LINES   300   /* 300 行 × 200B ≈ 60KB，可保留启动阶段日志（约 150 行） */
 #define LOG_LINE_SIZE   200
 
 static char s_log_buf[LOG_BUF_LINES][LOG_LINE_SIZE];
@@ -443,8 +443,10 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "slow_pulse", g_slow_feed_pulse_ms);
     cJSON_AddNumberToObject(root, "slow_gap", g_slow_feed_gap_ms);
     cJSON_AddNumberToObject(root, "buffer_gpio", g_buffer_switch_gpio);
-    cJSON_AddNumberToObject(root, "buffer_feed", g_buffer_feed_ms);
-    cJSON_AddNumberToObject(root, "buffer_cooldown", g_buffer_cooldown_ms);
+    cJSON_AddBoolToObject(root, "buffer_enabled", g_buffer_enabled);
+    cJSON_AddBoolToObject(root, "buffer_active_high", g_buffer_active_high);
+    cJSON_AddNumberToObject(root, "buffer_feed", BUFFER_FEED_MS);
+    cJSON_AddNumberToObject(root, "buffer_cooldown", BUFFER_COOLDOWN_MS);
     cJSON_AddNumberToObject(root, "buffer_encoder_a", g_buffer_encoder_a_gpio);
     cJSON_AddNumberToObject(root, "buffer_encoder_b", g_buffer_encoder_b_gpio);
     cJSON_AddBoolToObject(root, "buffer_encoder_reverse", g_buffer_encoder_reverse);
@@ -870,7 +872,7 @@ static esp_err_t monitor_page_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ---------- 缓冲参数 API ---------- */
+/* ---------- 微动辅助送料参数 API ---------- */
 static esp_err_t filament_buffer_post_handler(httpd_req_t *req)
 {
     char buf[128];
@@ -881,18 +883,20 @@ static esp_err_t filament_buffer_post_handler(httpd_req_t *req)
     }
     buf[ret] = '\0';
 
-    char gpio_str[8] = {0}, feed_str[16] = {0}, cool_str[16] = {0};
+    char enabled_str[8] = {0}, active_high_str[8] = {0};
     char enc_a_str[8] = {0}, enc_b_str[8] = {0}, enc_rev_str[8] = {0};
-    if (httpd_query_key_value(buf, "gpio", gpio_str, sizeof(gpio_str)) != ESP_OK ||
-        httpd_query_key_value(buf, "feed", feed_str, sizeof(feed_str)) != ESP_OK ||
-        httpd_query_key_value(buf, "cooldown", cool_str, sizeof(cool_str)) != ESP_OK) {
+    if (httpd_query_key_value(buf, "enabled", enabled_str, sizeof(enabled_str)) != ESP_OK ||
+        httpd_query_key_value(buf, "active_high", active_high_str, sizeof(active_high_str)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing field");
         return ESP_FAIL;
     }
 
-    filament_set_buffer_switch(atoi(gpio_str));
-    filament_set_buffer_feed(atoi(feed_str));
-    filament_set_buffer_cooldown(atoi(cool_str));
+    if (!filament_set_buffer_enabled(atoi(enabled_str) != 0) ||
+        !filament_set_buffer_active_high(atoi(active_high_str) != 0)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
     bool has_enc_a = httpd_query_key_value(buf, "encoder_a", enc_a_str, sizeof(enc_a_str)) == ESP_OK;
     bool has_enc_b = httpd_query_key_value(buf, "encoder_b", enc_b_str, sizeof(enc_b_str)) == ESP_OK;
     bool has_enc_rev = httpd_query_key_value(buf, "encoder_reverse", enc_rev_str, sizeof(enc_rev_str)) == ESP_OK;

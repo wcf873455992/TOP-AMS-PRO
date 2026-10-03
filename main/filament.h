@@ -26,12 +26,15 @@ extern int32_t g_slow_feed_gap_ms;
 extern int32_t g_feed_timeout_ms;
 extern int32_t g_uload_wait_timeout_ms;
 extern int32_t g_buffer_switch_gpio;
-extern int32_t g_buffer_feed_ms;
-extern int32_t g_buffer_cooldown_ms;
+/* 微动辅助送料固定参数（固件内置，网页不可配置） */
+#define BUFFER_FEED_MS      500    /* 每次触发送料时长（ms） */
+#define BUFFER_COOLDOWN_MS  1000   /* 最小触发间隔（ms） */
 extern int32_t g_buffer_encoder_a_gpio;
 extern int32_t g_buffer_encoder_b_gpio;
 extern bool    g_buffer_encoder_reverse;
 extern bool    g_channel_enabled[8];
+extern bool    g_buffer_enabled;
+extern bool    g_buffer_active_high;
 
 void filament_init(void);
 void filament_save_config(void);
@@ -65,9 +68,8 @@ void filament_set_feed_timeout(int32_t ms);
 void filament_set_uload_wait_timeout(int32_t ms);
 int32_t filament_get_uload_wait_timeout(void);
 
-void filament_set_buffer_switch(int32_t gpio);
-void filament_set_buffer_feed(int32_t ms);
-void filament_set_buffer_cooldown(int32_t ms);
+bool filament_set_buffer_enabled(bool enabled);
+bool filament_set_buffer_active_high(bool active_high);
 bool filament_set_buffer_encoder(int32_t gpio_a, int32_t gpio_b, bool reverse);
 bool filament_buffer_forward_recent(uint32_t window_ms);
 

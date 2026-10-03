@@ -36,9 +36,11 @@
         .slow-feed-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
         .slow-feed-row label { color: #555; }
         .slow-feed-row input { padding: 4px 6px; font-size: 13px; border-radius: 4px; border: 1px solid #ddd; }
-        .slow-feed-row2 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
+        .slow-feed-row2 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; margin-bottom: 8px; }
         .slow-feed-row2 label { color: #555; }
         .slow-feed-row2 input { padding: 4px 6px; font-size: 13px; border-radius: 4px; border: 1px solid #ddd; }
+        .slow-feed-row2 .buffer-toggle { display: inline-flex; align-items: center; gap: 4px; }
+        .slow-feed-row2 .buffer-toggle input { width: auto; margin: 0; }
         .slow-feed-row2 button { padding: 4px 10px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
         .slow-feed-row button { padding: 4px 10px; background: #007bff; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
         .channel { border: 1px solid #ddd; border-radius: 8px; padding: 8px 10px;
@@ -112,18 +114,18 @@
         <label>送料超时</label>
         <input type="number" id="feedTimeout" placeholder="秒" title="全速进料超时（秒）" style="width:60px;">
         <span style="font-size:12px;color:#888;">秒</span>
-        <label style="margin-left:12px;">辅助送料</label>
+        <label style="margin-left:12px;">缓慢进料</label>
         <input type="number" id="slowPulse" placeholder="脉冲" title="脉冲宽度(ms)" style="width:60px;">
         <input type="number" id="slowGap" placeholder="间隔" title="间隔(ms)" style="width:60px;">
         <button onclick="testSlowFeed()">测试</button>
         <button onclick="saveSlowFeed()">保存</button>
     </div>
 <div class="slow-feed-row2">
-        <label>缓冲</label>
-        <input type="number" id="bufGpio" placeholder="GPIO" title="微动开关 GPIO" style="width:60px;">
-        <input type="number" id="bufFeed" placeholder="送料" title="每次送料时长(ms)" style="width:60px;">
-        <input type="number" id="bufCool" placeholder="间隔" title="最小间隔(ms)" style="width:60px;">
-        <button onclick="saveBuffer()">保存</button>
+    <label>微动辅助送料</label>
+    <span>GPIO7</span>
+    <label class="buffer-toggle"><input type="checkbox" id="bufEnabled" onchange="saveBuffer()"><span id="bufEnabledText">关闭</span></label>
+    <button id="bufPolarity" type="button" onclick="toggleBufferPolarity()">切换为高有效</button>
+    <button onclick="saveBuffer()">保存</button>
     </div>
     <div class="slow-feed-row2">
         <label>料动编码器</label>
@@ -170,6 +172,7 @@
         let currentColorCh = 0;
         let currentMode = 'passive';
         let ftTimer = null;
+        let bufferActiveHigh = false;
 
         const MATERIALS = ['PLA', 'PETG', 'ABS', 'TPU', 'ASA', 'PC', 'PA', 'PVA', 'HIPS'];
         const PRESET_COLORS = [
@@ -354,15 +357,16 @@
                         const sg = document.getElementById('slowGap');
                         if (sp) sp.value = data.slow_pulse || 30;
                         if (sg) sg.value = data.slow_gap || 600;
-                        const bg = document.getElementById('bufGpio');
-                        const bf = document.getElementById('bufFeed');
-                        const bc = document.getElementById('bufCool');
+                        const be = document.getElementById('bufEnabled');
+                        const bet = document.getElementById('bufEnabledText');
+                        const bp = document.getElementById('bufPolarity');
                         const bea = document.getElementById('bufEncoderA');
                         const beb = document.getElementById('bufEncoderB');
                         const ber = document.getElementById('bufEncoderReverse');
-                        if (bg) bg.value = data.buffer_gpio >= 0 ? data.buffer_gpio : '';
-                        if (bf) bf.value = data.buffer_feed || 500;
-                        if (bc) bc.value = data.buffer_cooldown || 1000;
+                        if (be) be.checked = !!data.buffer_enabled;
+                        if (bet) bet.textContent = data.buffer_enabled ? '打开' : '关闭';
+                        bufferActiveHigh = !!data.buffer_active_high;
+                        if (bp) bp.textContent = bufferActiveHigh ? '切换为低有效' : '切换为高有效';
                         if (bea) bea.value = data.buffer_encoder_a >= 0 ? data.buffer_encoder_a : '';
                         if (beb) beb.value = data.buffer_encoder_b >= 0 ? data.buffer_encoder_b : '';
                         if (ber) ber.checked = !!data.buffer_encoder_reverse;
@@ -489,7 +493,7 @@
             })
             .then(r => r.json())
             .then(res => {
-                if (res.ok) showToast('辅助送料: 脉冲 ' + pulse + 'ms, 间隔 ' + gap + 'ms');
+                if (res.ok) showToast('缓慢进料: 脉冲 ' + pulse + 'ms, 间隔 ' + gap + 'ms');
                 else showToast('保存失败');
             })
             .catch(() => showToast('网络错误'));
@@ -540,9 +544,7 @@
         }
 
         function saveBuffer() {
-            const gpio = document.getElementById('bufGpio').value || '-1';
-            const feed = document.getElementById('bufFeed').value || '500';
-            const cool = document.getElementById('bufCool').value || '1000';
+            const enabled = document.getElementById('bufEnabled').checked ? '1' : '0';
             const encoderA = document.getElementById('bufEncoderA').value || '-1';
             const encoderB = document.getElementById('bufEncoderB').value || '-1';
             const encoderReverse = document.getElementById('bufEncoderReverse').checked ? '1' : '0';
@@ -550,16 +552,27 @@
             fetch('/filament/buffer', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'gpio=' + gpio + '&feed=' + feed + '&cooldown=' + cool +
+                body: 'enabled=' + enabled + '&active_high=' + (bufferActiveHigh ? '1' : '0') +
                     '&encoder_a=' + encoderA + '&encoder_b=' + encoderB +
                     '&encoder_reverse=' + encoderReverse
             })
             .then(r => r.json())
             .then(res => {
-                if (res.ok) showToast('缓冲参数已保存');
+                if (res.ok) {
+                    const enabledText = document.getElementById('bufEnabledText');
+                    if (enabledText) enabledText.textContent = enabled === '1' ? '打开' : '关闭';
+                    showToast('微动辅助送料参数已保存');
+                }
                 else showToast('保存失败');
             })
             .catch(() => showToast('网络错误'));
+        }
+
+        function toggleBufferPolarity() {
+            bufferActiveHigh = !bufferActiveHigh;
+            const button = document.getElementById('bufPolarity');
+            if (button) button.textContent = bufferActiveHigh ? '切换为低有效' : '切换为高有效';
+            saveBuffer();
         }
 
         function doAction(ch, action) {
