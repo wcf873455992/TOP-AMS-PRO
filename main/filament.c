@@ -1753,9 +1753,13 @@ static void filament_buffer_task(void *arg)
                     gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
                 }
                 /* ★ 停止时恢复通道原状态：辅助送料不再把状态在 1/0 之间来回改写，
-                 *   否则网页「进料中」会随脉冲/间隔闪烁，并把「使用中」覆盖掉 */
+                 *   否则网页「进料中」会随脉冲/间隔闪烁，并把「使用中」覆盖掉；
+                 *   仅当状态仍是本任务写入的 4（送料中）时才恢复，避免覆盖送料期间
+                 *   由进料/AMS 同步写入的「使用中」(3) 等新状态 */
                 if (state_owned && phase_idx >= 0) {
-                    g_channel_state[phase_idx] = prev_state;
+                    if (g_channel_state[phase_idx] == 4) {
+                        g_channel_state[phase_idx] = prev_state;
+                    }
                     state_owned = false;
                 }
                 g_buffer_feeding = false;
@@ -1903,7 +1907,8 @@ static void filament_slow_test_task(void *arg)
         gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 0);
         vTaskDelay(pdMS_TO_TICKS(gap));
     }
-    if (state_owned) g_channel_state[idx] = prev_state;
+    /* 仅当状态仍是本任务写入的 4 时才恢复，避免覆盖测试期间产生的「使用中」(3) 等新状态 */
+    if (state_owned && g_channel_state[idx] == 4) g_channel_state[idx] = prev_state;
 
     ESP_LOGI(TAG, "[slow_test] ch=%d 完成", ch);
     vTaskDelete(NULL);
