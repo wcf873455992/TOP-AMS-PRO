@@ -449,6 +449,12 @@ static esp_err_t filament_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "buffer_encoder_b", g_buffer_encoder_b_gpio);
     cJSON_AddBoolToObject(root, "buffer_encoder_reverse", g_buffer_encoder_reverse);
     cJSON_AddBoolToObject(root, "buffer_forward", filament_buffer_forward_recent(500));
+    /* 微动辅助送料实时诊断（网页每秒刷新显示） */
+    cJSON_AddNumberToObject(root, "buffer_level", filament_buffer_level());
+    cJSON_AddBoolToObject(root, "buffer_valid", filament_buffer_valid());
+    cJSON_AddBoolToObject(root, "buffer_ready", filament_buffer_target_index() >= 0);
+    cJSON_AddNumberToObject(root, "buffer_channel_gpio", filament_buffer_channel_gpio());
+    cJSON_AddBoolToObject(root, "buffer_feeding", g_buffer_feeding);
     cJSON_AddNumberToObject(root, "feed_timeout", g_feed_timeout_ms);
     cJSON_AddNumberToObject(root, "uload_wait_timeout", g_uload_wait_timeout_ms);
 

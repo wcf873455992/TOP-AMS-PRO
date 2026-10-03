@@ -271,6 +271,7 @@ int32_t g_buffer_encoder_a_gpio = -1;
 int32_t g_buffer_encoder_b_gpio = -1;
 bool g_buffer_encoder_reverse = false;
 bool g_channel_enabled[8] = { true, true, true, true, true, true, false, false };
+volatile bool g_buffer_feeding = false;   /* 微动辅助送料是否正在缓慢送料（网页实时显示） */
 
 static volatile uint8_t s_buffer_encoder_state;
 static volatile int64_t s_buffer_encoder_last_forward_us;
@@ -567,6 +568,41 @@ bool filament_buffer_forward_recent(uint32_t window_ms)
     int64_t now_us = esp_timer_get_time();
     return last_forward_us > 0 && now_us >= last_forward_us &&
            now_us - last_forward_us <= (int64_t)window_ms * 1000;
+}
+
+/* ---- 微动辅助送料实时诊断（网页显示，用于排查接线/极性/通道） ---- */
+
+/* 微动开关 GPIO 当前电平：0 = 低，1 = 高，-1 = GPIO 不可用 */
+int filament_buffer_level(void)
+{
+    if (g_buffer_switch_gpio < 0 || g_buffer_switch_gpio >= GPIO_NUM_MAX) return -1;
+    return gpio_get_level((gpio_num_t)g_buffer_switch_gpio);
+}
+
+/* 当前电平是否构成「有效」（与任务内判断一致） */
+bool filament_buffer_valid(void)
+{
+    int level = filament_buffer_level();
+    if (level < 0) return false;
+    return level == (g_buffer_active_high ? 1 : 0);
+}
+
+/* 当前是否有可送料通道：返回通道下标，-1 表示不可送料 */
+int filament_buffer_target_index(void)
+{
+    if (!g_buffer_enabled) return -1;
+    if (g_current_channel < 1 || g_current_channel > 8) return -1;
+    int idx = g_current_channel - 1;
+    if (!g_channel_enabled[idx]) return -1;
+    if (g_channels[idx].forward_gpio < 0) return -1;
+    return idx;
+}
+
+/* 当前通道的进料 GPIO（诊断用，-1 = 未配置） */
+int filament_buffer_channel_gpio(void)
+{
+    if (g_current_channel < 1 || g_current_channel > 8) return -1;
+    return g_channels[g_current_channel - 1].forward_gpio;
 }
 
 void filament_save_config(void)
@@ -1657,14 +1693,8 @@ static void filament_buffer_task(void *arg)
         /* ★ 电平检测步长（与缓慢进料脉冲/间隔配合，松开后最迟 20ms 停止） */
         vTaskDelay(pdMS_TO_TICKS(BUFFER_POLL_MS));
 
-        /* ---- 当前可送料的通道（使能 + 已配置进料 GPIO） ---- */
-        int idx = -1;
-        if (g_buffer_enabled &&
-            g_current_channel >= 1 && g_current_channel <= 8 &&
-            g_channel_enabled[g_current_channel - 1] &&
-            g_channels[g_current_channel - 1].forward_gpio >= 0) {
-            idx = g_current_channel - 1;
-        }
+        /* ---- 当前可送料的通道（使能 + 通道打开 + 已配置进料 GPIO） ---- */
+        int idx = filament_buffer_target_index();
 
         /* ---- 微动开关电平 ---- */
         bool level_on = (gpio_get_level((gpio_num_t)g_buffer_switch_gpio) ==
@@ -1682,6 +1712,7 @@ static void filament_buffer_task(void *arg)
                     gpio_set_level((gpio_num_t)g_channels[phase_idx].forward_gpio, 0);
                     g_channel_state[phase_idx] = 0;
                 }
+                g_buffer_feeding = false;
                 ESP_LOGI(TAG, "微动辅助送料停止（持续 %lld ms）",
                          (long long)(now - run_start));
                 phase = BP_IDLE;
@@ -1698,6 +1729,7 @@ static void filament_buffer_task(void *arg)
         case BP_IDLE:                       /* 电平刚有效：开始缓慢送料 */
             run_start = now;
             phase_idx = idx;
+            g_buffer_feeding = true;
             g_channel_state[idx] = 1;
             gpio_set_level((gpio_num_t)g_channels[idx].forward_gpio, 1);
             phase_end = now + pulse_ms;
