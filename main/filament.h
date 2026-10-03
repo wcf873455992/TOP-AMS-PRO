@@ -74,6 +74,7 @@ bool filament_buffer_forward_recent(uint32_t window_ms);
 
 /* 微动辅助送料实时诊断（网页显示 / 排查接线与极性） */
 extern volatile bool g_buffer_feeding;
+extern volatile uint32_t g_buffer_level_changes;
 int  filament_buffer_level(void);          /* GPIO7 电平：0 低 / 1 高 / -1 不可用 */
 bool filament_buffer_valid(void);          /* 当前电平是否构成「有效」 */
 int  filament_buffer_target_index(void);   /* 可送料通道下标，-1 不可送料 */

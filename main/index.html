@@ -172,6 +172,7 @@
         let currentMode = 'passive';
         let ftTimer = null;
         let slowFeedSaveTimer = null;
+        let bufTouchedAt = 0;   /* 最近一次操作微动辅助送料的时刻（3 秒内不回同步，避免打断输入） */
         let bufferActiveHigh = false;
 
         const MATERIALS = ['PLA', 'PETG', 'ABS', 'TPU', 'ASA', 'PC', 'PA', 'PVA', 'HIPS'];
@@ -391,11 +392,23 @@
                             parts.push(data.buffer_feeding ? '送料中' : '待机');
                             if (!data.buffer_ready) parts.push('通道未就绪');
                         }
+                        parts.push('变化:' + (data.buffer_level_changes | 0) + '次');
                         bst.textContent = parts.join(' · ');
                         bst.style.color = (data.buffer_enabled && data.buffer_valid) ? '#28a745' : '#888';
                         bst.title = '微动 GPIO' + (data.buffer_gpio !== undefined ? data.buffer_gpio : 7) +
                             ' · 当前通道进料 GPIO ' + data.buffer_channel_gpio +
-                            ' · 有效=缓慢送料，无效立即停止（改动即生效）';
+                            ' · 按住开关时「电平」应变化、「变化:」次数应增加；有效=缓慢送料，无效立即停止';
+                    }
+
+                    /* 与设备实际「使能 / 有效电平」保持同步，避免界面与实际不一致 */
+                    if (Date.now() - bufTouchedAt > 3000) {
+                        const be2 = document.getElementById('bufEnabled');
+                        const bet2 = document.getElementById('bufEnabledText');
+                        const bp2 = document.getElementById('bufPolarity');
+                        if (be2) be2.checked = !!data.buffer_enabled;
+                        if (bet2) bet2.textContent = data.buffer_enabled ? '打开' : '关闭';
+                        bufferActiveHigh = !!data.buffer_active_high;
+                        if (bp2) bp2.textContent = bufferActiveHigh ? '切换为低有效' : '切换为高有效';
                     }
                     renderChannels();
                 })
@@ -567,6 +580,7 @@
         }
 
         function saveBuffer() {
+            bufTouchedAt = Date.now();
             const enabled = document.getElementById('bufEnabled').checked ? '1' : '0';
             const encoderA = document.getElementById('bufEncoderA').value || '-1';
             const encoderB = document.getElementById('bufEncoderB').value || '-1';
@@ -584,9 +598,10 @@
                 if (res.ok) {
                     const enabledText = document.getElementById('bufEnabledText');
                     if (enabledText) enabledText.textContent = enabled === '1' ? '打开' : '关闭';
-                    showToast('微动辅助送料已保存（有效时持续缓慢送料）');
+                    showToast('微动辅助送料已生效：' + (enabled === '1' ? '使能打开' : '使能关闭') +
+                        '，' + (bufferActiveHigh ? '高有效' : '低有效'));
                 }
-                else showToast('保存失败');
+                else showToast('保存失败（设备未接受）');
             })
             .catch(() => showToast('网络错误'));
         }

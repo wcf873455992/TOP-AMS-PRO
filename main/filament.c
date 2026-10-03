@@ -272,6 +272,8 @@ int32_t g_buffer_encoder_b_gpio = -1;
 bool g_buffer_encoder_reverse = false;
 bool g_channel_enabled[8] = { true, true, true, true, true, true, false, false };
 volatile bool g_buffer_feeding = false;   /* 微动辅助送料是否正在缓慢送料（网页实时显示） */
+volatile uint32_t g_buffer_level_changes = 0;  /* 微动开关电平变化次数（诊断接线用） */
+static int s_buffer_last_level = -1;           /* 上次采样到的电平，-1 = 尚未采样 */
 
 static volatile uint8_t s_buffer_encoder_state;
 static volatile int64_t s_buffer_encoder_last_forward_us;
@@ -1696,9 +1698,15 @@ static void filament_buffer_task(void *arg)
         /* ---- 当前可送料的通道（使能 + 通道打开 + 已配置进料 GPIO） ---- */
         int idx = filament_buffer_target_index();
 
-        /* ---- 微动开关电平 ---- */
-        bool level_on = (gpio_get_level((gpio_num_t)g_buffer_switch_gpio) ==
-                         (g_buffer_active_high ? 1 : 0));
+        /* ---- 微动开关电平（含电平变化诊断，便于判断接线/极性） ---- */
+        int level_now = gpio_get_level((gpio_num_t)g_buffer_switch_gpio);
+        if (level_now != s_buffer_last_level) {
+            ESP_LOGI(TAG, "微动开关电平变化: %d -> %d（当前有效电平=%d）",
+                     s_buffer_last_level, level_now, g_buffer_active_high ? 1 : 0);
+            s_buffer_last_level = level_now;
+            g_buffer_level_changes++;
+        }
+        bool level_on = (level_now == (g_buffer_active_high ? 1 : 0));
 
         /* ---- 允许条件：使能 + 当前通道可用 + 电平有效 ---- */
         bool allow = (idx >= 0) && level_on;
