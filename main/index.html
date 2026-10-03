@@ -121,7 +121,6 @@
     </div>
 <div class="slow-feed-row2">
     <label title="微动开关电平有效时持续缓慢送料，无效立即停止">微动辅助送料</label>
-    <span>GPIO7</span>
     <label class="buffer-toggle"><input type="checkbox" id="bufEnabled" onchange="saveBuffer()"><span id="bufEnabledText">关闭</span></label>
     <button id="bufPolarity" type="button" onclick="toggleBufferPolarity()">切换为高有效</button>
     <span id="bufStatus" title="电平有效时持续缓慢送料，无效立即停止（改动即生效，无需保存）" style="font-size:12px;color:#888;">--</span>
@@ -401,8 +400,7 @@
                         bst.textContent = parts.join(' · ');
                         bst.style.color = (data.buffer_enabled && data.buffer_valid &&
                                            data.printer_running) ? '#28a745' : '#888';
-                        bst.title = '微动 GPIO' + (data.buffer_gpio !== undefined ? data.buffer_gpio : 7) +
-                            ' · 当前通道进料 GPIO ' + data.buffer_channel_gpio +
+                        bst.title = '当前通道进料 GPIO ' + data.buffer_channel_gpio +
                             ' · 仅打印机 RUNNING（打印中）且微动电平有效时才送料' +
                             ' · 按住开关时「当前状态」应变化、「变化:」次数应增加；有效=缓慢送料，无效立即停止';
                     }
